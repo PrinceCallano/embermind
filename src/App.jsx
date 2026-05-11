@@ -159,9 +159,10 @@ function normalizeTelemetry(data) {
   const state = Number(data?.class ?? data?.state ?? getStateFromSignals(maxTemp, current));
   const timestamp = data?.timestamp ? new Date(data.timestamp) : now;
 
-  return {
-    t: formatClock(timestamp),
-    timestamp: data?.timestamp ?? now.toISOString(),
+return {
+  hasData: true,
+  t: formatClock(timestamp),
+  timestamp: data?.timestamp ?? now.toISOString(),
     displayTimestamp: formatDateTime(timestamp),
     deviceId: data?.device_id ?? data?.deviceId ?? "neurobreak_esp32_001",
     ir1: Number(ir1.toFixed(2)),
@@ -653,7 +654,7 @@ export default function ALISTOVOLTLiveDashboard() {
     }
 
     fetchLiveTelemetry();
-    const interval = setInterval(fetchLiveTelemetry, 1000);
+const interval = setInterval(fetchLiveTelemetry, 500);
     return () => clearInterval(interval);
   }, []);
 
