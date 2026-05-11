@@ -19,6 +19,15 @@ app.get("/", (req, res) => {
   });
 });
 
+app.get("/api/health", (req, res) => {
+  res.json({
+    ok: true,
+    message: "API is healthy",
+    has_data: hasReceivedTelemetry,
+    timestamp: new Date().toISOString(),
+  });
+});
+
 app.post("/api/telemetry", (req, res) => {
   const data = req.body;
 
