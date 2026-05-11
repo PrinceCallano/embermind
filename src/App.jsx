@@ -128,6 +128,29 @@ function outputLabel(value) {
 }
 
 function normalizeTelemetry(data) {
+  if (!data || data.has_data === false || data.device_id === null) {
+    return {
+      hasData: false,
+      t: "--:--:--",
+      timestamp: null,
+      displayTimestamp: "Waiting for ESP32",
+      deviceId: "No device yet",
+      ir1: null,
+      ir2: null,
+      maxTemp: null,
+      current: null,
+      state: 0,
+      status: "Waiting",
+      risk: 0,
+      light: 0,
+      buzzer: 0,
+      relay: 1,
+      smsSent: false,
+      wifiStatus: "waiting",
+      cloudStatus: "waiting",
+    };
+  }
+
   const now = new Date();
   const ir1 = Number(data?.ir1 ?? data?.IR1 ?? 0);
   const ir2 = Number(data?.ir2 ?? data?.IR2 ?? 0);
@@ -591,7 +614,7 @@ export default function ALISTOVOLTLiveDashboard() {
     },
   ]);
 
-  const [history, setHistory] = useState(() => seedDemoHistory());
+  const [history, setHistory] = useState(() => (USE_DEMO_DATA ? seedDemoHistory() : []));
 
   useEffect(() => {
     const clock = setInterval(() => setNow(new Date()), 1000);
@@ -616,7 +639,11 @@ export default function ALISTOVOLTLiveDashboard() {
         const data = await response.json();
         const point = normalizeTelemetry(data);
 
-        setHistory((prev) => [...prev.slice(-(MAX_HISTORY_POINTS - 1)), point]);
+        if (!point.hasData) {
+          setHistory([]);
+        } else {
+          setHistory((prev) => [...prev.slice(-(MAX_HISTORY_POINTS - 1)), point]);
+        }
         setConnectionError(null);
         setTick((value) => value + 1);
       } catch (error) {
@@ -630,13 +657,14 @@ export default function ALISTOVOLTLiveDashboard() {
     return () => clearInterval(interval);
   }, []);
 
-  const latest = history[history.length - 1] ?? normalizeTelemetry({});
+  const latest = history[history.length - 1] ?? normalizeTelemetry(null);
+  const hasData = latest.hasData !== false;
   const currentState = latest.state;
   const stateMeta = STATE_META[currentState] ?? STATE_META[0];
   const relayStatus = relayLabel(latest.relay);
 
   useEffect(() => {
-    if (!latest) return;
+    if (!latest || !hasData) return;
 
     const nowText = formatClock(new Date());
     const eventKey = connectionError ? "connection-error" : `state-${currentState}`;
@@ -697,9 +725,18 @@ export default function ALISTOVOLTLiveDashboard() {
 
       return [nextEvent, ...prev].slice(0, 6);
     });
-  }, [currentState, latest, stateMeta, tick, connectionError]);
+  }, [currentState, latest, stateMeta, tick, connectionError, hasData]);
 
   const summary = useMemo(() => {
+    if (history.length === 0) {
+      return {
+        avgIR1: "--",
+        avgIR2: "--",
+        avgCurrent: "--",
+        stateCounts: { 0: 0, 1: 0, 2: 0, 3: 0 },
+      };
+    }
+
     const avgIR1 = history.reduce((sum, item) => sum + item.ir1, 0) / history.length;
     const avgIR2 = history.reduce((sum, item) => sum + item.ir2, 0) / history.length;
     const avgCurrent = history.reduce((sum, item) => sum + item.current, 0) / history.length;
@@ -804,10 +841,10 @@ export default function ALISTOVOLTLiveDashboard() {
           </div>
 
           <div className="mt-6 grid gap-4 grid-cols-1 sm:grid-cols-2 xl:grid-cols-4">
-            <StatCard icon={Thermometer} label="IR1 Temp" value={`${latest.ir1}°C`} subvalue="MLX90614 sensor 1" />
-            <StatCard icon={Thermometer} label="IR2 Temp" value={`${latest.ir2}°C`} subvalue="MLX90614 sensor 2" />
-            <StatCard icon={Flame} label="Max Temp" value={`${latest.maxTemp}°C`} subvalue="Highest hotspot value" />
-            <StatCard icon={Zap} label="Current" value={`${latest.current}A`} subvalue="SCT-013 current sensor" />
+            <StatCard icon={Thermometer} label="IR1 Temp" value={hasData ? `${latest.ir1}°C` : "--"} subvalue={hasData ? "MLX90614 sensor 1" : "Waiting for ESP32"} />
+            <StatCard icon={Thermometer} label="IR2 Temp" value={hasData ? `${latest.ir2}°C` : "--"} subvalue={hasData ? "MLX90614 sensor 2" : "Waiting for ESP32"} />
+            <StatCard icon={Flame} label="Max Temp" value={hasData ? `${latest.maxTemp}°C` : "--"} subvalue={hasData ? "Highest hotspot value" : "Waiting for ESP32"} />
+            <StatCard icon={Zap} label="Current" value={hasData ? `${latest.current}A` : "--"} subvalue={hasData ? "SCT-013 current sensor" : "Waiting for ESP32"} />
           </div>
         </motion.div>
 
@@ -927,10 +964,10 @@ export default function ALISTOVOLTLiveDashboard() {
         </div>
 
         <div className="mt-4 sm:mt-6 grid gap-4 sm:gap-6 xl:grid-cols-4">
-          <StatCard icon={AlertTriangle} label="Light" value={outputLabel(latest.light)} subvalue="Warning light · GPIO 14" />
-          <StatCard icon={Radio} label="Buzzer" value={outputLabel(latest.buzzer)} subvalue="Audible alert · GPIO 26" />
-          <StatCard icon={Power} label="Relay" value={relayStatus} subvalue="Active-low relay · GPIO 23" />
-          <StatCard icon={Send} label="SMS" value={latest.smsSent ? "SENT" : "READY"} subvalue="SIM800L alert state" />
+          <StatCard icon={AlertTriangle} label="Light" value={hasData ? outputLabel(latest.light) : "--"} subvalue="Warning light · GPIO 14" />
+          <StatCard icon={Radio} label="Buzzer" value={hasData ? outputLabel(latest.buzzer) : "--"} subvalue="Audible alert · GPIO 26" />
+          <StatCard icon={Power} label="Relay" value={hasData ? relayStatus : "--"} subvalue="Active-low relay · GPIO 23" />
+          <StatCard icon={Send} label="SMS" value={hasData ? (latest.smsSent ? "SENT" : "READY") : "--"} subvalue="SIM800L alert state" />
         </div>
 
         <div className="mt-4 sm:mt-6 grid gap-4 sm:gap-6 xl:grid-cols-[minmax(280px,0.8fr)_minmax(0,1.2fr)]">

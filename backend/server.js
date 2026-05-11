@@ -7,28 +7,14 @@ const PORT = process.env.PORT || 3001;
 app.use(cors());
 app.use(express.json());
 
-let latestTelemetry = {
-  device_id: "neurobreak_esp32_001",
-  ir1: 0,
-  ir2: 0,
-  max_temp: 0,
-  current: 0,
-  status: "Normal",
-  class: 0,
-  light: 0,
-  buzzer: 0,
-  relay: 1,
-  sms_sent: false,
-  wifi_status: "unknown",
-  cloud_status: "online",
-  timestamp: new Date().toISOString(),
-};
-
+let hasReceivedTelemetry = false;
+let latestTelemetry = null;
 let telemetryHistory = [];
 
 app.get("/", (req, res) => {
   res.json({
     message: "NeuroBreak ALISTOVOLT API is running",
+    has_data: hasReceivedTelemetry,
     latest: latestTelemetry,
   });
 });
@@ -42,6 +28,7 @@ app.post("/api/telemetry", (req, res) => {
   const maxTemp = Number(data.max_temp ?? Math.max(ir1, ir2));
 
   latestTelemetry = {
+    has_data: true,
     device_id: data.device_id ?? "neurobreak_esp32_001",
     ir1,
     ir2,
@@ -58,6 +45,7 @@ app.post("/api/telemetry", (req, res) => {
     timestamp: new Date().toISOString(),
   };
 
+  hasReceivedTelemetry = true;
   telemetryHistory.unshift(latestTelemetry);
   telemetryHistory = telemetryHistory.slice(0, 200);
 
@@ -71,11 +59,33 @@ app.post("/api/telemetry", (req, res) => {
 });
 
 app.get("/api/latest", (req, res) => {
+  if (!hasReceivedTelemetry || !latestTelemetry) {
+    return res.json({
+      has_data: false,
+      device_id: null,
+      message: "Waiting for ESP32 telemetry",
+    });
+  }
+
   res.json(latestTelemetry);
 });
 
 app.get("/api/history", (req, res) => {
-  res.json(telemetryHistory);
+  res.json({
+    has_data: hasReceivedTelemetry,
+    history: telemetryHistory,
+  });
+});
+
+app.post("/api/reset", (req, res) => {
+  hasReceivedTelemetry = false;
+  latestTelemetry = null;
+  telemetryHistory = [];
+
+  res.json({
+    success: true,
+    message: "Telemetry reset. Waiting for ESP32 data.",
+  });
 });
 
 app.listen(PORT, () => {
