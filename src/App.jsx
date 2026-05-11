@@ -32,8 +32,8 @@ import {
   ReferenceLine,
 } from "recharts";
 
-const USE_DEMO_DATA = true;
-const API_URL = "http://localhost:3001/api/latest";
+const USE_DEMO_DATA = false;
+const API_URL = "https://neurobreak-api.onrender.com/api/latest";
 const MAX_HISTORY_POINTS = 36;
 
 const COLORS = {
