@@ -654,7 +654,7 @@ export default function ALISTOVOLTLiveDashboard() {
     }
 
     fetchLiveTelemetry();
-const interval = setInterval(fetchLiveTelemetry, 500);
+    const interval = setInterval(fetchLiveTelemetry, 500);
     return () => clearInterval(interval);
   }, []);
 
