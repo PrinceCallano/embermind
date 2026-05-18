@@ -37,6 +37,11 @@ const API_URL = "https://neurobreak-api.onrender.com/api/latest";
 const HISTORY_API_URL = "https://neurobreak-api.onrender.com/api/history";
 const MAX_HISTORY_POINTS = 36;
 
+// Dashboard live polling settings.
+// This keeps the dashboard responsive without allowing overlapping requests.
+const LIVE_REFRESH_MS = 300;
+const LIVE_FETCH_TIMEOUT_MS = 1500;
+
 const COLORS = {
   ir1: "#ffffff",
   ir2: "#fb923c",
@@ -638,7 +643,17 @@ export default function EMBERMINDLiveDashboard() {
   }, []);
 
   useEffect(() => {
+    let stopped = false;
+    let timeoutId = null;
+    let requestSequence = 0;
+
     async function fetchLiveTelemetry() {
+      const currentRequest = requestSequence + 1;
+      requestSequence = currentRequest;
+
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), LIVE_FETCH_TIMEOUT_MS);
+
       try {
         if (USE_DEMO_DATA) {
           setHistory((prev) => {
@@ -650,27 +665,73 @@ export default function EMBERMINDLiveDashboard() {
           return;
         }
 
-        const response = await fetch(API_URL, { cache: "no-store" });
+        const response = await fetch(`${API_URL}?t=${Date.now()}`, {
+          cache: "no-store",
+          signal: controller.signal,
+          headers: {
+            "Cache-Control": "no-cache",
+            Pragma: "no-cache",
+          },
+        });
+
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
+
         const data = await response.json();
+
+        // Ignore older responses if a newer request was already started.
+        if (stopped || currentRequest !== requestSequence) return;
+
         const point = normalizeTelemetry(data);
 
         if (!point.hasData) {
           setHistory([]);
         } else {
-          setHistory((prev) => [...prev.slice(-(MAX_HISTORY_POINTS - 1)), point]);
+          setHistory((prev) => {
+            const previousPoint = prev[prev.length - 1];
+
+            // Do not flood the chart with duplicate points when the backend has
+            // not received new ESP32 data yet.
+            if (
+              previousPoint &&
+              previousPoint.timestamp === point.timestamp &&
+              previousPoint.ir1 === point.ir1 &&
+              previousPoint.ir2 === point.ir2 &&
+              previousPoint.maxTemp === point.maxTemp &&
+              previousPoint.current === point.current &&
+              previousPoint.state === point.state &&
+              previousPoint.light === point.light &&
+              previousPoint.buzzer === point.buzzer &&
+              previousPoint.relay === point.relay
+            ) {
+              return [...prev.slice(0, -1), point];
+            }
+
+            return [...prev.slice(-(MAX_HISTORY_POINTS - 1)), point];
+          });
         }
+
         setConnectionError(null);
         setTick((value) => value + 1);
       } catch (error) {
-        setConnectionError(error.message || "Connection failed");
-        setTick((value) => value + 1);
+        if (error.name !== "AbortError") {
+          setConnectionError(error.message || "Connection failed");
+          setTick((value) => value + 1);
+        }
+      } finally {
+        clearTimeout(timeout);
+
+        if (!stopped) {
+          timeoutId = setTimeout(fetchLiveTelemetry, LIVE_REFRESH_MS);
+        }
       }
     }
 
     fetchLiveTelemetry();
-    const interval = setInterval(fetchLiveTelemetry, 500);
-    return () => clearInterval(interval);
+
+    return () => {
+      stopped = true;
+      if (timeoutId) clearTimeout(timeoutId);
+    };
   }, []);
 
   const fetchSavedActionLogs = useCallback(async () => {
@@ -914,7 +975,7 @@ export default function EMBERMINDLiveDashboard() {
                 <div className="text-[11px] uppercase tracking-[0.28em] text-white/45">Live telemetry</div>
                 <div className="mt-2 text-2xl sm:text-3xl font-black tracking-tight">IR Temperature + Current</div>
               </div>
-              <div className="rounded-full border border-white/10 bg-black/25 px-3 py-1 text-xs text-white/55 self-start sm:self-auto">1-second refresh</div>
+              <div className="rounded-full border border-white/10 bg-black/25 px-3 py-1 text-xs text-white/55 self-start sm:self-auto">Live refresh</div>
             </div>
 
             <div className="mb-4 flex flex-wrap gap-2">
