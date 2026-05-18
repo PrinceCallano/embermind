@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { motion } from "framer-motion";
 import {
   Activity,
@@ -34,6 +34,7 @@ import {
 
 const USE_DEMO_DATA = false;
 const API_URL = "https://neurobreak-api.onrender.com/api/latest";
+const HISTORY_API_URL = "https://neurobreak-api.onrender.com/api/history";
 const MAX_HISTORY_POINTS = 36;
 
 const COLORS = {
@@ -127,6 +128,34 @@ function outputLabel(value) {
   return Number(value) === 1 ? "ON" : "OFF";
 }
 
+function getSeverityFromState(state) {
+  if (state === 3) return "critical";
+  if (state === 2) return "high";
+  if (state === 1) return "mid";
+  return "low";
+}
+
+function buildSavedActionEvents(savedRows) {
+  return savedRows.map((row, index) => {
+    const point = normalizeTelemetry({
+      ...row,
+      timestamp: row.timestamp ?? row.created_at,
+    });
+
+    const meta = STATE_META[point.state] ?? STATE_META[0];
+
+    return {
+      id: `saved-${row.id ?? index}-${point.timestamp}`,
+      eventKey: `saved-${row.id ?? index}`,
+      time: point.displayTimestamp,
+      title: `Saved log · ${meta.label}`,
+      detail: `Device ${point.deviceId} · Max ${point.maxTemp}°C · IR1 ${point.ir1}°C · IR2 ${point.ir2}°C · Current ${point.current}A · Light ${outputLabel(point.light)} · Buzzer ${outputLabel(point.buzzer)} · Relay ${relayLabel(point.relay)}`,
+      severity: getSeverityFromState(point.state),
+      raw: point,
+    };
+  });
+}
+
 function normalizeTelemetry(data) {
   if (!data || data.has_data === false || data.device_id === null) {
     return {
@@ -157,12 +186,13 @@ function normalizeTelemetry(data) {
   const maxTemp = Number(data?.max_temp ?? data?.maxTemp ?? Math.max(ir1, ir2));
   const current = Number(data?.current ?? data?.Current_A ?? 0);
   const state = Number(data?.class ?? data?.state ?? getStateFromSignals(maxTemp, current));
-  const timestamp = data?.timestamp ? new Date(data.timestamp) : now;
+  const timestampSource = data?.timestamp ?? data?.created_at;
+  const timestamp = timestampSource ? new Date(timestampSource) : now;
 
-return {
-  hasData: true,
-  t: formatClock(timestamp),
-  timestamp: data?.timestamp ?? now.toISOString(),
+  return {
+    hasData: true,
+    t: formatClock(timestamp),
+    timestamp: timestampSource ?? now.toISOString(),
     displayTimestamp: formatDateTime(timestamp),
     deviceId: data?.device_id ?? data?.deviceId ?? "neurobreak_esp32_001",
     ir1: Number(ir1.toFixed(2)),
@@ -417,27 +447,6 @@ function ChartLegendItem({ color, label, unit }) {
   );
 }
 
-function ThresholdLabel({ viewBox, value, stroke, isMobile }) {
-  const fontSize = isMobile ? 10 : 11;
-  const baseX = (viewBox?.x ?? 0) + 12;
-  const baseY = viewBox?.y ?? 0;
-
-  return (
-    <text
-      x={baseX}
-      y={baseY}
-      fill={stroke}
-      fontSize={fontSize}
-      fontWeight={700}
-      opacity={1}
-      textAnchor="start"
-      dominantBaseline="middle"
-    >
-      {value}
-    </text>
-  );
-}
-
 function CustomTooltip({ active, payload, label }) {
   if (!active || !payload?.length) return null;
 
@@ -604,6 +613,12 @@ export default function EMBERMINDLiveDashboard() {
   const [now, setNow] = useState(new Date());
   const [tick, setTick] = useState(0);
   const [events, setEvents] = useState([]);
+  const [actionStreamMode, setActionStreamMode] = useState("live");
+  const [savedActionLimit, setSavedActionLimit] = useState(50);
+  const [savedActionEvents, setSavedActionEvents] = useState([]);
+  const [savedActionLoading, setSavedActionLoading] = useState(false);
+  const [savedActionError, setSavedActionError] = useState(null);
+  const [savedActionSource, setSavedActionSource] = useState(null);
   const [connectionError, setConnectionError] = useState(null);
   const [assistantOpen, setAssistantOpen] = useState(false);
   const [assistantInput, setAssistantInput] = useState("");
@@ -657,6 +672,37 @@ export default function EMBERMINDLiveDashboard() {
     const interval = setInterval(fetchLiveTelemetry, 500);
     return () => clearInterval(interval);
   }, []);
+
+  const fetchSavedActionLogs = useCallback(async () => {
+    try {
+      setSavedActionLoading(true);
+      setSavedActionError(null);
+
+      const response = await fetch(`${HISTORY_API_URL}?limit=${savedActionLimit}`, {
+        cache: "no-store",
+      });
+
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+
+      const data = await response.json();
+      const rows = Array.isArray(data?.history) ? data.history : [];
+
+      setSavedActionEvents(buildSavedActionEvents(rows));
+      setSavedActionSource(data?.source ?? "unknown");
+    } catch (error) {
+      setSavedActionError(error.message || "Failed to load saved logs");
+      setSavedActionEvents([]);
+      setSavedActionSource(null);
+    } finally {
+      setSavedActionLoading(false);
+    }
+  }, [savedActionLimit]);
+
+  useEffect(() => {
+    if (actionStreamMode === "saved") {
+      fetchSavedActionLogs();
+    }
+  }, [actionStreamMode, fetchSavedActionLogs]);
 
   const latest = history[history.length - 1] ?? normalizeTelemetry(null);
   const hasData = latest.hasData !== false;
@@ -972,19 +1018,119 @@ export default function EMBERMINDLiveDashboard() {
         </div>
 
         <div className="mt-4 sm:mt-6 grid gap-4 sm:gap-6 xl:grid-cols-[minmax(280px,0.8fr)_minmax(0,1.2fr)]">
-          <motion.div initial={{ opacity: 0, y: 18 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.2, duration: 0.45 }} className="rounded-[28px] sm:rounded-[34px] border border-white/10 bg-white/5 p-4 sm:p-6 lg:p-7 backdrop-blur-2xl">
-            <div className="mb-5 flex items-end justify-between gap-4">
-              <div>
-                <div className="text-[11px] uppercase tracking-[0.28em] text-white/45">Action stream</div>
-                <div className="mt-2 text-2xl sm:text-3xl font-black tracking-tight">Recent Events</div>
+          <motion.div
+            initial={{ opacity: 0, y: 18 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ delay: 0.2, duration: 0.45 }}
+            className="rounded-[28px] sm:rounded-[34px] border border-white/10 bg-white/5 p-4 sm:p-6 lg:p-7 backdrop-blur-2xl"
+          >
+            <div className="mb-5 flex flex-col gap-4">
+              <div className="flex items-end justify-between gap-4">
+                <div>
+                  <div className="text-[11px] uppercase tracking-[0.28em] text-white/45">
+                    Action stream
+                  </div>
+                  <div className="mt-2 text-2xl sm:text-3xl font-black tracking-tight">
+                    {actionStreamMode === "live" ? "Recent Events" : "Saved Logs"}
+                  </div>
+                </div>
+                <Activity className="h-5 w-5 text-white/45 shrink-0" />
               </div>
-              <Activity className="h-5 w-5 text-white/45 shrink-0" />
+
+              <div className="flex flex-col gap-3">
+                <div className="grid grid-cols-2 gap-2 rounded-2xl border border-white/10 bg-black/25 p-1">
+                  <button
+                    type="button"
+                    onClick={() => setActionStreamMode("live")}
+                    className={`rounded-xl px-3 py-2 text-xs font-semibold transition ${
+                      actionStreamMode === "live"
+                        ? "bg-white text-black"
+                        : "text-white/60 hover:bg-white/10 hover:text-white"
+                    }`}
+                  >
+                    Live
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setActionStreamMode("saved")}
+                    className={`rounded-xl px-3 py-2 text-xs font-semibold transition ${
+                      actionStreamMode === "saved"
+                        ? "bg-white text-black"
+                        : "text-white/60 hover:bg-white/10 hover:text-white"
+                    }`}
+                  >
+                    Saved Logs
+                  </button>
+                </div>
+
+                {actionStreamMode === "saved" && (
+                  <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+                    <select
+                      value={savedActionLimit}
+                      onChange={(e) => setSavedActionLimit(Number(e.target.value))}
+                      className="rounded-2xl border border-white/10 bg-black/40 px-3 py-2 text-xs font-semibold text-white outline-none"
+                    >
+                      <option value={25}>Latest 25</option>
+                      <option value={50}>Latest 50</option>
+                      <option value={100}>Latest 100</option>
+                      <option value={200}>Latest 200</option>
+                      <option value={500}>Latest 500</option>
+                    </select>
+
+                    <button
+                      type="button"
+                      onClick={fetchSavedActionLogs}
+                      disabled={savedActionLoading}
+                      className="rounded-2xl border border-white/10 bg-white/10 px-3 py-2 text-xs font-semibold text-white/80 transition hover:bg-white/15 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {savedActionLoading ? "Loading..." : "Refresh saved logs"}
+                    </button>
+
+                    {savedActionSource && (
+                      <div className="rounded-2xl border border-emerald-400/20 bg-emerald-400/10 px-3 py-2 text-xs font-semibold text-emerald-200">
+                        Source: {savedActionSource}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
             </div>
-            <div className="space-y-3">
-              {events.map((event) => (
-                <EventPill key={event.id} {...event} />
-              ))}
-            </div>
+
+            {actionStreamMode === "live" ? (
+              <div className="max-h-[520px] space-y-3 overflow-y-auto pr-1">
+                {events.length > 0 ? (
+                  events.map((event) => <EventPill key={event.id} {...event} />)
+                ) : (
+                  <div className="rounded-2xl border border-white/10 bg-black/25 p-4 text-sm leading-6 text-white/55">
+                    Waiting for live action stream events.
+                  </div>
+                )}
+              </div>
+            ) : (
+              <div className="max-h-[520px] space-y-3 overflow-y-auto pr-1">
+                {savedActionError && (
+                  <div className="rounded-2xl border border-rose-400/25 bg-rose-400/10 p-4 text-sm leading-6 text-rose-100">
+                    Could not load saved logs: {savedActionError}
+                  </div>
+                )}
+
+                {!savedActionError && savedActionLoading && (
+                  <div className="rounded-2xl border border-white/10 bg-black/25 p-4 text-sm leading-6 text-white/55">
+                    Loading saved telemetry from Supabase...
+                  </div>
+                )}
+
+                {!savedActionError && !savedActionLoading && savedActionEvents.length === 0 && (
+                  <div className="rounded-2xl border border-white/10 bg-black/25 p-4 text-sm leading-6 text-white/55">
+                    No saved telemetry logs found yet. Send ESP32 data or run a test POST to the deployed API.
+                  </div>
+                )}
+
+                {!savedActionLoading &&
+                  savedActionEvents.map((event) => <EventPill key={event.id} {...event} />)}
+              </div>
+            )}
           </motion.div>
 
           <motion.div initial={{ opacity: 0, y: 18 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.25, duration: 0.45 }} className="rounded-[28px] sm:rounded-[34px] border border-white/10 bg-white/5 p-4 sm:p-6 lg:p-7 backdrop-blur-2xl">
