@@ -40,10 +40,13 @@ const HISTORY_API_URL = `${API_BASE_URL}/api/history`;
 const EMBERMIND_AI_API_URL = `${API_BASE_URL}/api/embermind-ai`;
 const WEBSOCKET_URL = API_BASE_URL.replace(/^https:/, "wss:").replace(/^http:/, "ws:") + "/ws";
 
-const MAX_HISTORY_POINTS = 36;
+// Increased from 36 to 60.
+// If your ESP32/RPi sends around 1 reading per second,
+// this gives you around 1 minute of graph history.
+const MAX_HISTORY_POINTS = 60;
 
-// WebSocket is now the main realtime channel.
-// Polling is kept as backup only, so it is intentionally slower.
+// WebSocket is the main realtime channel.
+// Polling is kept as backup only.
 const LIVE_REFRESH_MS = 5000;
 const LIVE_FETCH_TIMEOUT_MS = 1500;
 const WEBSOCKET_RECONNECT_MS = 1500;
@@ -815,7 +818,7 @@ export default function EMBERMINDLiveDashboard() {
         setConnectionError(null);
         setRealtimeStatus("demo");
         setTick((value) => value + 1);
-      }, 300);
+      }, 1000);
 
       return () => clearInterval(demoInterval);
     }
@@ -1271,9 +1274,9 @@ export default function EMBERMINDLiveDashboard() {
                   <XAxis
                     dataKey="t"
                     stroke="rgba(255,255,255,0.28)"
-                    tick={{ fill: "rgba(255,255,255,0.42)", fontSize: isMobile ? 9 : 11 }}
-                    minTickGap={isMobile ? 60 : 28}
-                    interval="preserveStartEnd"
+                    tick={{ fill: "rgba(255,255,255,0.42)", fontSize: isMobile ? 7 : 9 }}
+                    minTickGap={0}
+                    interval={0}
                     axisLine={{ stroke: "rgba(255,255,255,0.22)" }}
                     tickLine={{ stroke: "rgba(255,255,255,0.18)" }}
                   />
@@ -1341,9 +1344,11 @@ export default function EMBERMINDLiveDashboard() {
                   <XAxis
                     dataKey="t"
                     stroke="rgba(255,255,255,0.28)"
-                    tick={{ fill: "rgba(255,255,255,0.42)", fontSize: isMobile ? 9 : 11 }}
-                    minTickGap={isMobile ? 60 : 28}
-                    interval="preserveStartEnd"
+                    tick={{ fill: "rgba(255,255,255,0.42)", fontSize: isMobile ? 7 : 9 }}
+                    minTickGap={0}
+                    interval={0}
+                    axisLine={{ stroke: "rgba(255,255,255,0.22)" }}
+                    tickLine={{ stroke: "rgba(255,255,255,0.18)" }}
                   />
                   <YAxis
                     width={isMobile ? 30 : 42}
