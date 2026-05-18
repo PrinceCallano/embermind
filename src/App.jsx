@@ -38,14 +38,13 @@ const API_BASE_URL = "https://neurobreak-api.onrender.com";
 const API_URL = `${API_BASE_URL}/api/latest`;
 const HISTORY_API_URL = `${API_BASE_URL}/api/history`;
 const EMBERMIND_AI_API_URL = `${API_BASE_URL}/api/embermind-ai`;
-const WEBSOCKET_URL = API_BASE_URL.replace(/^https:/, "wss:").replace(/^http:/, "ws:") + "/ws";
+const WEBSOCKET_URL =
+  API_BASE_URL.replace(/^https:/, "wss:").replace(/^http:/, "ws:") + "/ws";
 
-// Your data is currently arriving about every 2 seconds.
-// 30 points = about 60 seconds of visible graph history.
-const MAX_HISTORY_POINTS = 30;
+// 60 points = about 1 minute of history if data comes every 1 second
+const MAX_HISTORY_POINTS = 60;
 
-// WebSocket is the main realtime channel.
-// Polling is kept as backup only.
+// WebSocket main realtime channel, polling is backup
 const LIVE_REFRESH_MS = 5000;
 const LIVE_FETCH_TIMEOUT_MS = 1500;
 const WEBSOCKET_RECONNECT_MS = 1500;
@@ -306,7 +305,7 @@ function seedDemoHistory() {
   let point = createDemoPoint();
 
   for (let i = MAX_HISTORY_POINTS - 1; i >= 0; i -= 1) {
-    const timestamp = new Date(Date.now() - i * 2000);
+    const timestamp = new Date(Date.now() - i * 1000);
     point = createDemoPoint(point);
 
     seed.push({
@@ -817,7 +816,7 @@ export default function EMBERMINDLiveDashboard() {
         setConnectionError(null);
         setRealtimeStatus("demo");
         setTick((value) => value + 1);
-      }, 2000);
+      }, 1000);
 
       return () => clearInterval(demoInterval);
     }
@@ -1267,25 +1266,19 @@ export default function EMBERMINDLiveDashboard() {
               <ChartLegendItem color={COLORS.current} label="Current" unit="Amperes" />
             </div>
 
-            <div className="h-[330px] w-full rounded-[24px] border border-white/10 bg-black/25 p-3 sm:h-[380px] sm:rounded-[28px]">
+            <div className="h-[300px] w-full rounded-[24px] border border-white/10 bg-black/25 p-3 sm:h-[350px] sm:rounded-[28px]">
               <ResponsiveContainer width="100%" height="100%">
                 <LineChart
                   data={history}
-                  margin={{ top: 20, right: isMobile ? 10 : 14, left: isMobile ? 4 : 10, bottom: 26 }}
+                  margin={{ top: 20, right: isMobile ? 10 : 14, left: isMobile ? 4 : 10, bottom: 0 }}
                 >
                   <CartesianGrid stroke="rgba(255,255,255,0.08)" strokeDasharray="4 4" />
                   <XAxis
                     dataKey="t"
                     stroke="rgba(255,255,255,0.28)"
-                    tick={{
-                      fill: "rgba(255,255,255,0.42)",
-                      fontSize: isMobile ? 7 : 9,
-                    }}
-                    minTickGap={0}
-                    interval={0}
-                    angle={-35}
-                    textAnchor="end"
-                    height={52}
+                    tick={{ fill: "rgba(255,255,255,0.42)", fontSize: isMobile ? 9 : 11 }}
+                    minTickGap={isMobile ? 60 : 28}
+                    interval="preserveStartEnd"
                     axisLine={{ stroke: "rgba(255,255,255,0.22)" }}
                     tickLine={{ stroke: "rgba(255,255,255,0.18)" }}
                   />
@@ -1303,13 +1296,63 @@ export default function EMBERMINDLiveDashboard() {
                     tick={{ fill: "rgba(255,255,255,0.42)", fontSize: isMobile ? 9 : 11 }}
                   />
                   <Tooltip content={<CustomTooltip />} />
-                  <ReferenceLine yAxisId="left" y={60} stroke="rgba(56,189,248,0.38)" strokeDasharray="6 6" ifOverflow="extendDomain" />
-                  <ReferenceLine yAxisId="left" y={75} stroke="rgba(251,191,36,0.38)" strokeDasharray="6 6" ifOverflow="extendDomain" />
-                  <ReferenceLine yAxisId="left" y={90} stroke="rgba(244,63,94,0.42)" strokeDasharray="6 6" ifOverflow="extendDomain" />
-                  <Line yAxisId="left" type="monotone" dataKey="ir1" name="IR1 temperature" stroke={COLORS.ir1} strokeWidth={isMobile ? 2.2 : 3} dot={false} />
-                  <Line yAxisId="left" type="monotone" dataKey="ir2" name="IR2 temperature" stroke={COLORS.ir2} strokeWidth={isMobile ? 2.2 : 3} dot={false} />
-                  <Line yAxisId="left" type="monotone" dataKey="maxTemp" name="Max temperature" stroke={COLORS.maxTemp} strokeWidth={isMobile ? 2.2 : 3} dot={false} />
-                  <Line yAxisId="right" type="monotone" dataKey="current" name="Load current" stroke={COLORS.current} strokeWidth={isMobile ? 2 : 2.4} dot={false} />
+                  <ReferenceLine
+                    yAxisId="left"
+                    y={60}
+                    stroke="rgba(56,189,248,0.38)"
+                    strokeDasharray="6 6"
+                    ifOverflow="extendDomain"
+                  />
+                  <ReferenceLine
+                    yAxisId="left"
+                    y={75}
+                    stroke="rgba(251,191,36,0.38)"
+                    strokeDasharray="6 6"
+                    ifOverflow="extendDomain"
+                  />
+                  <ReferenceLine
+                    yAxisId="left"
+                    y={90}
+                    stroke="rgba(244,63,94,0.42)"
+                    strokeDasharray="6 6"
+                    ifOverflow="extendDomain"
+                  />
+                  <Line
+                    yAxisId="left"
+                    type="monotone"
+                    dataKey="ir1"
+                    name="IR1 temperature"
+                    stroke={COLORS.ir1}
+                    strokeWidth={isMobile ? 2.2 : 3}
+                    dot={false}
+                  />
+                  <Line
+                    yAxisId="left"
+                    type="monotone"
+                    dataKey="ir2"
+                    name="IR2 temperature"
+                    stroke={COLORS.ir2}
+                    strokeWidth={isMobile ? 2.2 : 3}
+                    dot={false}
+                  />
+                  <Line
+                    yAxisId="left"
+                    type="monotone"
+                    dataKey="maxTemp"
+                    name="Max temperature"
+                    stroke={COLORS.maxTemp}
+                    strokeWidth={isMobile ? 2.2 : 3}
+                    dot={false}
+                  />
+                  <Line
+                    yAxisId="right"
+                    type="monotone"
+                    dataKey="current"
+                    name="Load current"
+                    stroke={COLORS.current}
+                    strokeWidth={isMobile ? 2 : 2.4}
+                    dot={false}
+                  />
                 </LineChart>
               </ResponsiveContainer>
             </div>
@@ -1343,25 +1386,19 @@ export default function EMBERMINDLiveDashboard() {
               <ChartLegendItem color={COLORS.risk} label="Risk" unit="Computed %" />
             </div>
 
-            <div className="h-[330px] w-full rounded-[24px] border border-white/10 bg-black/25 p-3 sm:h-[380px] sm:rounded-[28px]">
+            <div className="h-[300px] w-full rounded-[24px] border border-white/10 bg-black/25 p-3 sm:h-[350px] sm:rounded-[28px]">
               <ResponsiveContainer width="100%" height="100%">
                 <AreaChart
                   data={history}
-                  margin={{ top: 20, right: isMobile ? 10 : 14, left: isMobile ? 6 : 14, bottom: 26 }}
+                  margin={{ top: 20, right: isMobile ? 10 : 14, left: isMobile ? 6 : 14, bottom: 0 }}
                 >
                   <CartesianGrid stroke="rgba(255,255,255,0.08)" strokeDasharray="4 4" />
                   <XAxis
                     dataKey="t"
                     stroke="rgba(255,255,255,0.28)"
-                    tick={{
-                      fill: "rgba(255,255,255,0.42)",
-                      fontSize: isMobile ? 7 : 9,
-                    }}
-                    minTickGap={0}
-                    interval={0}
-                    angle={-35}
-                    textAnchor="end"
-                    height={52}
+                    tick={{ fill: "rgba(255,255,255,0.42)", fontSize: isMobile ? 9 : 11 }}
+                    minTickGap={isMobile ? 60 : 28}
+                    interval="preserveStartEnd"
                     axisLine={{ stroke: "rgba(255,255,255,0.22)" }}
                     tickLine={{ stroke: "rgba(255,255,255,0.18)" }}
                   />
