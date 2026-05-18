@@ -40,10 +40,9 @@ const HISTORY_API_URL = `${API_BASE_URL}/api/history`;
 const EMBERMIND_AI_API_URL = `${API_BASE_URL}/api/embermind-ai`;
 const WEBSOCKET_URL = API_BASE_URL.replace(/^https:/, "wss:").replace(/^http:/, "ws:") + "/ws";
 
-// Increased from 36 to 60.
-// If your ESP32/RPi sends around 1 reading per second,
-// this gives you around 1 minute of graph history.
-const MAX_HISTORY_POINTS = 60;
+// Your data is currently arriving about every 2 seconds.
+// 30 points = about 60 seconds of visible graph history.
+const MAX_HISTORY_POINTS = 30;
 
 // WebSocket is the main realtime channel.
 // Polling is kept as backup only.
@@ -307,7 +306,7 @@ function seedDemoHistory() {
   let point = createDemoPoint();
 
   for (let i = MAX_HISTORY_POINTS - 1; i >= 0; i -= 1) {
-    const timestamp = new Date(Date.now() - i * 1000);
+    const timestamp = new Date(Date.now() - i * 2000);
     point = createDemoPoint(point);
 
     seed.push({
@@ -818,7 +817,7 @@ export default function EMBERMINDLiveDashboard() {
         setConnectionError(null);
         setRealtimeStatus("demo");
         setTick((value) => value + 1);
-      }, 1000);
+      }, 2000);
 
       return () => clearInterval(demoInterval);
     }
@@ -849,7 +848,11 @@ export default function EMBERMINDLiveDashboard() {
         await fetchLiveTelemetryBackup();
       } catch (error) {
         if (!stopped) {
-          setConnectionError(error.name === "AbortError" ? "Backup polling timed out" : error.message || "Connection failed");
+          setConnectionError(
+            error.name === "AbortError"
+              ? "Backup polling timed out"
+              : error.message || "Connection failed"
+          );
           setTick((value) => value + 1);
         }
       } finally {
@@ -1264,19 +1267,25 @@ export default function EMBERMINDLiveDashboard() {
               <ChartLegendItem color={COLORS.current} label="Current" unit="Amperes" />
             </div>
 
-            <div className="h-[300px] w-full rounded-[24px] border border-white/10 bg-black/25 p-3 sm:h-[350px] sm:rounded-[28px]">
+            <div className="h-[330px] w-full rounded-[24px] border border-white/10 bg-black/25 p-3 sm:h-[380px] sm:rounded-[28px]">
               <ResponsiveContainer width="100%" height="100%">
                 <LineChart
                   data={history}
-                  margin={{ top: 20, right: isMobile ? 10 : 14, left: isMobile ? 4 : 10, bottom: 0 }}
+                  margin={{ top: 20, right: isMobile ? 10 : 14, left: isMobile ? 4 : 10, bottom: 26 }}
                 >
                   <CartesianGrid stroke="rgba(255,255,255,0.08)" strokeDasharray="4 4" />
                   <XAxis
                     dataKey="t"
                     stroke="rgba(255,255,255,0.28)"
-                    tick={{ fill: "rgba(255,255,255,0.42)", fontSize: isMobile ? 7 : 9 }}
+                    tick={{
+                      fill: "rgba(255,255,255,0.42)",
+                      fontSize: isMobile ? 7 : 9,
+                    }}
                     minTickGap={0}
                     interval={0}
+                    angle={-35}
+                    textAnchor="end"
+                    height={52}
                     axisLine={{ stroke: "rgba(255,255,255,0.22)" }}
                     tickLine={{ stroke: "rgba(255,255,255,0.18)" }}
                   />
@@ -1334,19 +1343,25 @@ export default function EMBERMINDLiveDashboard() {
               <ChartLegendItem color={COLORS.risk} label="Risk" unit="Computed %" />
             </div>
 
-            <div className="h-[300px] w-full rounded-[24px] border border-white/10 bg-black/25 p-3 sm:h-[350px] sm:rounded-[28px]">
+            <div className="h-[330px] w-full rounded-[24px] border border-white/10 bg-black/25 p-3 sm:h-[380px] sm:rounded-[28px]">
               <ResponsiveContainer width="100%" height="100%">
                 <AreaChart
                   data={history}
-                  margin={{ top: 20, right: isMobile ? 10 : 14, left: isMobile ? 6 : 14, bottom: 0 }}
+                  margin={{ top: 20, right: isMobile ? 10 : 14, left: isMobile ? 6 : 14, bottom: 26 }}
                 >
                   <CartesianGrid stroke="rgba(255,255,255,0.08)" strokeDasharray="4 4" />
                   <XAxis
                     dataKey="t"
                     stroke="rgba(255,255,255,0.28)"
-                    tick={{ fill: "rgba(255,255,255,0.42)", fontSize: isMobile ? 7 : 9 }}
+                    tick={{
+                      fill: "rgba(255,255,255,0.42)",
+                      fontSize: isMobile ? 7 : 9,
+                    }}
                     minTickGap={0}
                     interval={0}
+                    angle={-35}
+                    textAnchor="end"
+                    height={52}
                     axisLine={{ stroke: "rgba(255,255,255,0.22)" }}
                     tickLine={{ stroke: "rgba(255,255,255,0.18)" }}
                   />
