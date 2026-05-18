@@ -33,12 +33,12 @@ import {
 } from "recharts";
 
 const USE_DEMO_DATA = false;
+
 const API_URL = "https://neurobreak-api.onrender.com/api/latest";
 const HISTORY_API_URL = "https://neurobreak-api.onrender.com/api/history";
-const MAX_HISTORY_POINTS = 36;
+const AI_CONTEXT_API_URL = "https://neurobreak-api.onrender.com/api/ai-context";
 
-// Dashboard live polling settings.
-// This keeps the dashboard responsive without allowing overlapping requests.
+const MAX_HISTORY_POINTS = 36;
 const LIVE_REFRESH_MS = 300;
 const LIVE_FETCH_TIMEOUT_MS = 1500;
 
@@ -85,6 +85,17 @@ function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
 }
 
+function safeNumber(value, fallback = 0) {
+  const num = Number(value);
+  return Number.isFinite(num) ? num : fallback;
+}
+
+function safeBoolean(value, fallback = false) {
+  if (value === true || value === "true" || value === 1 || value === "1") return true;
+  if (value === false || value === "false" || value === 0 || value === "0") return false;
+  return fallback;
+}
+
 function formatClock(date) {
   return new Intl.DateTimeFormat("en-PH", {
     hour: "2-digit",
@@ -113,7 +124,7 @@ function getStateFromSignals(maxTemp, current) {
 }
 
 function getActionLabel(state) {
-  if (state === 3) return "Relay trip + SMS alert";
+  if (state === 3) return "Relay shutdown + SMS alert";
   if (state === 2) return "Warning light + buzzer";
   if (state === 1) return "Predictive notification";
   return "Monitor";
@@ -125,12 +136,39 @@ function scoreRisk(maxTemp, current) {
   return Math.round(tempScore * 0.68 + currentScore * 0.32);
 }
 
-function relayLabel(relayRaw) {
-  return Number(relayRaw) === 0 ? "TRIPPED" : "READY";
+function isReactiveState(state, status) {
+  const numericState = Number(state);
+  const normalizedStatus = String(status ?? "").trim().toLowerCase();
+  return numericState === 3 || normalizedStatus === "reactive";
 }
 
-function outputLabel(value) {
-  return Number(value) === 1 ? "ON" : "OFF";
+function isPreventiveOrReactive(state, status) {
+  const numericState = Number(state);
+  const normalizedStatus = String(status ?? "").trim().toLowerCase();
+  return numericState >= 2 || normalizedStatus === "preventive" || normalizedStatus === "reactive";
+}
+
+function relayLabel(relayRaw, state, status) {
+  if (isReactiveState(state, status)) return "TRIPPED";
+  return "READY";
+}
+
+function relayDetail(relayRaw, state, status) {
+  if (isReactiveState(state, status)) {
+    return "Reactive/Class 3 shutdown condition";
+  }
+
+  return `Normal protection state · raw relay ${safeNumber(relayRaw, 0)}`;
+}
+
+function outputLabel(value, state, status, type = "generic") {
+  if (type === "relay") return relayLabel(value, state, status);
+
+  if (type === "light" || type === "buzzer") {
+    if (isPreventiveOrReactive(state, status)) return "ON";
+  }
+
+  return safeNumber(value, 0) === 1 ? "ON" : "OFF";
 }
 
 function getSeverityFromState(state) {
@@ -138,27 +176,6 @@ function getSeverityFromState(state) {
   if (state === 2) return "high";
   if (state === 1) return "mid";
   return "low";
-}
-
-function buildSavedActionEvents(savedRows) {
-  return savedRows.map((row, index) => {
-    const point = normalizeTelemetry({
-      ...row,
-      timestamp: row.timestamp ?? row.created_at,
-    });
-
-    const meta = STATE_META[point.state] ?? STATE_META[0];
-
-    return {
-      id: `saved-${row.id ?? index}-${point.timestamp}`,
-      eventKey: `saved-${row.id ?? index}`,
-      time: point.displayTimestamp,
-      title: `Saved log · ${meta.label}`,
-      detail: `Device ${point.deviceId} · Max ${point.maxTemp}°C · IR1 ${point.ir1}°C · IR2 ${point.ir2}°C · Current ${point.current}A · Light ${outputLabel(point.light)} · Buzzer ${outputLabel(point.buzzer)} · Relay ${relayLabel(point.relay)}`,
-      severity: getSeverityFromState(point.state),
-      raw: point,
-    };
-  });
 }
 
 function normalizeTelemetry(data) {
@@ -186,11 +203,13 @@ function normalizeTelemetry(data) {
   }
 
   const now = new Date();
-  const ir1 = Number(data?.ir1 ?? data?.IR1 ?? 0);
-  const ir2 = Number(data?.ir2 ?? data?.IR2 ?? 0);
-  const maxTemp = Number(data?.max_temp ?? data?.maxTemp ?? Math.max(ir1, ir2));
-  const current = Number(data?.current ?? data?.Current_A ?? 0);
-  const state = Number(data?.class ?? data?.state ?? getStateFromSignals(maxTemp, current));
+
+  const ir1 = safeNumber(data?.ir1 ?? data?.IR1, 0);
+  const ir2 = safeNumber(data?.ir2 ?? data?.IR2, 0);
+  const maxTemp = safeNumber(data?.max_temp ?? data?.maxTemp, Math.max(ir1, ir2));
+  const current = safeNumber(data?.current ?? data?.Current_A, 0);
+  const state = safeNumber(data?.class ?? data?.state, getStateFromSignals(maxTemp, current));
+
   const timestampSource = data?.timestamp ?? data?.created_at;
   const timestamp = timestampSource ? new Date(timestampSource) : now;
 
@@ -206,13 +225,13 @@ function normalizeTelemetry(data) {
     current: Number(current.toFixed(2)),
     state,
     status: data?.status ?? STATE_META[state]?.label ?? "Normal",
-    risk: Number(data?.risk ?? scoreRisk(maxTemp, current)),
-    light: Number(data?.light ?? 0),
-    buzzer: Number(data?.buzzer ?? 0),
-    relay: Number(data?.relay ?? 1),
-    smsSent: Boolean(data?.sms_sent ?? data?.smsSent ?? false),
+    risk: safeNumber(data?.risk, scoreRisk(maxTemp, current)),
+    light: safeNumber(data?.light, 0),
+    buzzer: safeNumber(data?.buzzer, 0),
+    relay: safeNumber(data?.relay, 1),
+    smsSent: safeBoolean(data?.sms_sent ?? data?.smsSent, false),
     wifiStatus: data?.wifi_status ?? data?.wifiStatus ?? "connected",
-    cloudStatus: data?.cloud_status ?? data?.cloudStatus ?? "demo",
+    cloudStatus: data?.cloud_status ?? data?.cloudStatus ?? "online",
   };
 }
 
@@ -255,6 +274,7 @@ function seedDemoHistory() {
   for (let i = MAX_HISTORY_POINTS - 1; i >= 0; i -= 1) {
     const timestamp = new Date(Date.now() - i * 1000);
     point = createDemoPoint(point);
+
     seed.push({
       ...point,
       t: formatClock(timestamp),
@@ -264,6 +284,27 @@ function seedDemoHistory() {
   }
 
   return seed;
+}
+
+function buildSavedActionEvents(savedRows) {
+  return savedRows.map((row, index) => {
+    const point = normalizeTelemetry({
+      ...row,
+      timestamp: row.timestamp ?? row.created_at,
+    });
+
+    const meta = STATE_META[point.state] ?? STATE_META[0];
+
+    return {
+      id: `saved-${row.id ?? index}-${point.timestamp}`,
+      eventKey: `saved-${row.id ?? index}`,
+      time: point.displayTimestamp,
+      title: `Saved log · ${meta.label}`,
+      detail: `Device ${point.deviceId} · Max ${point.maxTemp}°C · IR1 ${point.ir1}°C · IR2 ${point.ir2}°C · Current ${point.current}A · Light ${outputLabel(point.light, point.state, point.status, "light")} · Buzzer ${outputLabel(point.buzzer, point.state, point.status, "buzzer")} · Relay ${relayLabel(point.relay, point.state, point.status)}`,
+      severity: getSeverityFromState(point.state),
+      raw: point,
+    };
+  });
 }
 
 function useIsMobile() {
@@ -311,26 +352,84 @@ function StatCard({ icon: Icon, label, value, subvalue, className = "" }) {
   );
 }
 
+function EventPill({ time, title, detail, severity }) {
+  const tone = {
+    low: "border-emerald-400/25 bg-emerald-400/10 text-emerald-200",
+    mid: "border-sky-400/25 bg-sky-400/10 text-sky-200",
+    high: "border-amber-400/25 bg-amber-400/10 text-amber-100",
+    critical: "border-rose-400/25 bg-rose-400/10 text-rose-100",
+  }[severity];
+
+  return (
+    <div className={`rounded-2xl border p-4 ${tone}`}>
+      <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between sm:gap-3">
+        <div className="text-sm font-semibold leading-5">{title}</div>
+        <div className="whitespace-nowrap text-[10px] uppercase tracking-[0.25em] opacity-70">
+          {time}
+        </div>
+      </div>
+      <div className="mt-2 text-sm leading-5 opacity-80">{detail}</div>
+    </div>
+  );
+}
+
+function ChartLegendItem({ color, label, unit }) {
+  return (
+    <div className="flex items-center gap-2 rounded-full border border-white/10 bg-black/25 px-3 py-1.5 text-xs text-white/70">
+      <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: color }} />
+      <span className="font-semibold text-white/85">{label}</span>
+      <span className="text-white/40">{unit}</span>
+    </div>
+  );
+}
+
+function CustomTooltip({ active, payload, label }) {
+  if (!active || !payload?.length) return null;
+
+  return (
+    <div className="rounded-2xl border border-white/10 bg-black/90 p-3 text-xs text-white shadow-2xl backdrop-blur-xl">
+      <div className="mb-2 font-bold text-white/80">{label}</div>
+      <div className="space-y-1.5">
+        {payload.map((item) => (
+          <div key={item.dataKey} className="flex items-center justify-between gap-5">
+            <div className="flex items-center gap-2">
+              <span
+                className="h-2.5 w-2.5 rounded-full"
+                style={{ backgroundColor: item.stroke || item.color }}
+              />
+              <span className="text-white/70">{item.name}</span>
+            </div>
+            <span className="font-bold text-white">
+              {item.value}
+              {item.dataKey === "current" ? " A" : item.dataKey === "risk" ? "%" : " °C"}
+            </span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function SystemLinkPanel({ latest, currentState, connectionError, summary }) {
   return (
     <motion.div
       initial={{ opacity: 0, y: 18 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ delay: 0.08, duration: 0.45 }}
-      className="mt-4 sm:mt-6 rounded-[28px] sm:rounded-[34px] border border-white/10 bg-white/5 p-4 sm:p-6 lg:p-7 backdrop-blur-2xl"
+      className="mt-4 rounded-[28px] border border-white/10 bg-white/5 p-4 backdrop-blur-2xl sm:mt-6 sm:rounded-[34px] sm:p-6 lg:p-7"
     >
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <div className="text-[11px] uppercase tracking-[0.28em] text-white/45">
             System link
           </div>
-          <div className="mt-2 text-xl sm:text-2xl font-black tracking-tight">
+          <div className="mt-2 text-xl font-black tracking-tight sm:text-2xl">
             ESP32 → Cloud Dashboard
           </div>
         </div>
 
         <div
-          className={`h-[28px] min-w-[96px] self-start sm:self-auto flex items-center justify-center rounded-full px-3 text-xs font-semibold whitespace-nowrap ${
+          className={`flex h-[28px] min-w-[96px] items-center justify-center self-start rounded-full px-3 text-xs font-semibold sm:self-auto ${
             connectionError
               ? "bg-amber-500/15 text-amber-200"
               : latest.cloudStatus === "demo"
@@ -347,7 +446,7 @@ function SystemLinkPanel({ latest, currentState, connectionError, summary }) {
           <div className="flex items-center justify-between gap-3 text-sm text-white/55">
             <span>Hotspot Risk</span>
             <span
-              className={`font-bold whitespace-nowrap ${
+              className={`font-bold ${
                 latest.risk >= 80
                   ? "text-rose-300"
                   : latest.risk >= 60
@@ -393,7 +492,7 @@ function SystemLinkPanel({ latest, currentState, connectionError, summary }) {
               <div className="mt-3 text-lg font-black leading-tight">
                 {getActionLabel(currentState)}
               </div>
-              <div className="mt-1 text-sm text-white/45">Threshold Logic Active</div>
+              <div className="mt-1 text-sm text-white/45">Class-based logic active</div>
             </div>
           </div>
         </div>
@@ -421,67 +520,34 @@ function SystemLinkPanel({ latest, currentState, connectionError, summary }) {
   );
 }
 
-function EventPill({ time, title, detail, severity }) {
-  const tone = {
-    low: "border-emerald-400/25 bg-emerald-400/10 text-emerald-200",
-    mid: "border-sky-400/25 bg-sky-400/10 text-sky-200",
-    high: "border-amber-400/25 bg-amber-400/10 text-amber-100",
-    critical: "border-rose-400/25 bg-rose-400/10 text-rose-100",
-  }[severity];
+async function fetchEmbermindDatabaseContext() {
+  try {
+    const response = await fetch(`${AI_CONTEXT_API_URL}?limit=300&t=${Date.now()}`, {
+      cache: "no-store",
+      headers: {
+        "Cache-Control": "no-cache",
+        Pragma: "no-cache",
+      },
+    });
 
-  return (
-    <div className={`rounded-2xl border p-4 ${tone}`}>
-      <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between sm:gap-3">
-        <div className="text-sm font-semibold leading-5">{title}</div>
-        <div className="text-[10px] uppercase tracking-[0.25em] opacity-70 whitespace-nowrap">
-          {time}
-        </div>
-      </div>
-      <div className="mt-2 text-sm opacity-80 leading-5">{detail}</div>
-    </div>
-  );
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    return await response.json();
+  } catch (error) {
+    return {
+      success: false,
+      error: error.message || "Failed to fetch Embermind AI database context",
+    };
+  }
 }
 
-function ChartLegendItem({ color, label, unit }) {
-  return (
-    <div className="flex items-center gap-2 rounded-full border border-white/10 bg-black/25 px-3 py-1.5 text-xs text-white/70">
-      <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: color }} />
-      <span className="font-semibold text-white/85">{label}</span>
-      <span className="text-white/40">{unit}</span>
-    </div>
-  );
-}
-
-function CustomTooltip({ active, payload, label }) {
-  if (!active || !payload?.length) return null;
-
-  return (
-    <div className="rounded-2xl border border-white/10 bg-black/90 p-3 text-xs text-white shadow-2xl backdrop-blur-xl">
-      <div className="mb-2 font-bold text-white/80">{label}</div>
-      <div className="space-y-1.5">
-        {payload.map((item) => (
-          <div key={item.dataKey} className="flex items-center justify-between gap-5">
-            <div className="flex items-center gap-2">
-              <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: item.stroke || item.color }} />
-              <span className="text-white/70">{item.name}</span>
-            </div>
-            <span className="font-bold text-white">
-              {item.value}
-              {item.dataKey === "current" ? " A" : item.dataKey === "risk" ? "%" : " °C"}
-            </span>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-function buildAssistantReply(input, context) {
+function buildLocalAssistantReply(input, context) {
   const text = input.toLowerCase().trim();
   const { latest, stateMeta, events } = context;
   const recentEvent = events?.[0];
 
-  if (!text) return "I can help with status, risk, sensor readings, output states, cloud link, and recent events.";
+  if (!text) {
+    return "I can help with status, risk, sensor readings, output states, cloud link, saved history, and recent events.";
+  }
 
   if (text.includes("status") || text.includes("current state") || text === "state") {
     return `State: ${stateMeta.label}
@@ -493,7 +559,7 @@ Risk: ${latest.risk}%
 Action: ${getActionLabel(latest.state)}.`;
   }
 
-  if (text.includes("sensor") || text.includes("temperature") || text.includes("temp")) {
+  if (text.includes("sensor") || text.includes("temperature") || text.includes("temp") || text.includes("current")) {
     return `Sensor readings:
 IR1: ${latest.ir1}°C
 IR2: ${latest.ir2}°C
@@ -501,17 +567,29 @@ Max temperature: ${latest.maxTemp}°C
 Current: ${latest.current}A.`;
   }
 
-  if (text.includes("relay") || text.includes("buzzer") || text.includes("light") || text.includes("sms")) {
+  if (
+    text.includes("relay") ||
+    text.includes("buzzer") ||
+    text.includes("light") ||
+    text.includes("sms") ||
+    text.includes("output") ||
+    text.includes("trip") ||
+    text.includes("shutdown")
+  ) {
     return `Output states:
-Light: ${outputLabel(latest.light)}
-Buzzer: ${outputLabel(latest.buzzer)}
-Relay: ${relayLabel(latest.relay)}
-SMS: ${latest.smsSent ? "SENT" : "READY"}.`;
+Light: ${outputLabel(latest.light, latest.state, latest.status, "light")}
+Buzzer: ${outputLabel(latest.buzzer, latest.state, latest.status, "buzzer")}
+Relay: ${relayLabel(latest.relay, latest.state, latest.status)}
+Relay detail: ${relayDetail(latest.relay, latest.state, latest.status)}
+SMS: ${latest.smsSent ? "SENT" : "READY"}.
+
+Important: the dashboard treats Reactive/Class 3 as the actual trip condition, not raw relay = 0 alone.`;
   }
 
   if (text.includes("risk") || text.includes("safe") || text.includes("danger") || text.includes("stable")) {
     return `Risk: ${latest.risk}%
-State: ${stateMeta.label}`;
+State: ${stateMeta.label}
+Interpretation: ${latest.state === 0 ? "System is currently stable." : "System is in a warning or protective state."}`;
   }
 
   if (text.includes("cloud") || text.includes("wifi") || text.includes("connection")) {
@@ -529,10 +607,190 @@ Time: ${recentEvent.time}
 Detail: ${recentEvent.detail}`;
   }
 
-  return "Try asking about sensor readings, current status, output states, relay, SMS, risk, WiFi/cloud connection, or recent events.";
+  return "Try asking about sensor readings, current status, output states, relay, SMS, risk, saved history, highest temperature, WiFi/cloud connection, or recent events.";
 }
 
-function AssistantPanel({ isOpen, setIsOpen, messages, input, setInput, onSend, quickPrompts, isMobile }) {
+function buildDatabaseAwareReply(input, context, databaseContext) {
+  const text = input.toLowerCase().trim();
+  const { latest, stateMeta, events } = context;
+  const summary = databaseContext?.summary;
+  const dbLatest = summary?.latest_reading;
+  const recentEvent = events?.[0];
+
+  if (!text) {
+    return "I can help with status, risk, sensor readings, output states, cloud link, saved database logs, and recent events.";
+  }
+
+  if (!databaseContext?.success || !summary) {
+    return `${buildLocalAssistantReply(input, context)}
+
+Note: I could not fetch saved Supabase context, so this answer is based on the latest live dashboard reading only.`;
+  }
+
+  const latestState = safeNumber(dbLatest?.class ?? latest.state, 0);
+  const latestStatus = dbLatest?.status ?? latest.status ?? stateMeta.label;
+  const latestRelay = dbLatest?.relay ?? latest.relay;
+  const latestLight = dbLatest?.light ?? latest.light;
+  const latestBuzzer = dbLatest?.buzzer ?? latest.buzzer;
+
+  const relayState = relayLabel(latestRelay, latestState, latestStatus);
+  const relayExplanation = relayDetail(latestRelay, latestState, latestStatus);
+
+  const reactiveRecords = safeNumber(summary?.class_counts?.reactive, 0);
+  const preventiveRecords = safeNumber(summary?.class_counts?.preventive, 0);
+  const predictiveRecords = safeNumber(summary?.class_counts?.predictive, 0);
+  const normalRecords = safeNumber(summary?.class_counts?.normal, 0);
+
+  if (
+    text.includes("highest") ||
+    text.includes("maximum") ||
+    text.includes("max temp") ||
+    text.includes("hottest")
+  ) {
+    const temp = summary.highest_temperature;
+    const current = summary.highest_current;
+
+    return `Based on the saved Supabase records analyzed: ${summary.total_records_analyzed}
+
+Highest temperature:
+- Max temperature: ${temp.value}°C
+- IR1: ${temp.ir1}°C
+- IR2: ${temp.ir2}°C
+- Current at that time: ${temp.current}A
+- Status: ${temp.status}
+- Time: ${temp.timestamp}
+
+Highest current:
+- Current: ${current.value}A
+- Max temperature at that time: ${current.max_temp}°C
+- Status: ${current.status}
+- Time: ${current.timestamp}`;
+  }
+
+  if (
+    text.includes("summary") ||
+    text.includes("database") ||
+    text.includes("saved") ||
+    text.includes("history") ||
+    text.includes("records")
+  ) {
+    return `Database summary from Supabase:
+- Records analyzed: ${summary.total_records_analyzed}
+- Time range: ${summary.time_range.from} to ${summary.time_range.to}
+- Normal: ${normalRecords}
+- Predictive: ${predictiveRecords}
+- Preventive: ${preventiveRecords}
+- Reactive: ${reactiveRecords}
+- Highest temperature: ${summary.highest_temperature.value}°C
+- Highest current: ${summary.highest_current.value}A
+
+Relay interpretation:
+- Relay display: ${relayState}
+- ${relayExplanation}
+- Reactive/Class 3 is treated as the true shutdown/trip condition.`;
+  }
+
+  if (text.includes("status") || text.includes("current state") || text === "state") {
+    return `Current state: ${latestStatus}
+Class: ${latestState}
+IR1: ${dbLatest?.ir1 ?? latest.ir1}°C
+IR2: ${dbLatest?.ir2 ?? latest.ir2}°C
+Max temperature: ${dbLatest?.max_temp ?? latest.maxTemp}°C
+Current: ${dbLatest?.current ?? latest.current}A
+Risk: ${latest.risk}%
+Action: ${getActionLabel(latestState)}.`;
+  }
+
+  if (text.includes("sensor") || text.includes("temperature") || text.includes("temp") || text.includes("current")) {
+    return `Latest sensor readings from the database-aware context:
+- IR1: ${dbLatest?.ir1 ?? latest.ir1}°C
+- IR2: ${dbLatest?.ir2 ?? latest.ir2}°C
+- Max temperature: ${dbLatest?.max_temp ?? latest.maxTemp}°C
+- Current: ${dbLatest?.current ?? latest.current}A
+- Timestamp: ${dbLatest?.timestamp ?? latest.displayTimestamp}`;
+  }
+
+  if (
+    text.includes("relay") ||
+    text.includes("trip") ||
+    text.includes("shutdown") ||
+    text.includes("buzzer") ||
+    text.includes("light") ||
+    text.includes("sms") ||
+    text.includes("output")
+  ) {
+    return `Output states:
+- Light: ${outputLabel(latestLight, latestState, latestStatus, "light")}
+- Buzzer: ${outputLabel(latestBuzzer, latestState, latestStatus, "buzzer")}
+- Relay: ${relayState}
+- SMS: ${(dbLatest?.sms_sent ?? latest.smsSent) ? "SENT" : "READY"}
+
+Relay interpretation:
+- ${relayExplanation}
+- Raw relay value: ${safeNumber(latestRelay, 0)}
+- The dashboard treats Reactive/Class 3 as the true trip condition.
+
+Database counts:
+- Reactive records: ${reactiveRecords}
+- Relay trip records: ${reactiveRecords}`;
+  }
+
+  if (text.includes("risk") || text.includes("safe") || text.includes("danger") || text.includes("stable")) {
+    const isStable = latestState === 0 && reactiveRecords === 0 && preventiveRecords === 0;
+
+    return `Safety interpretation:
+- Current state: ${latestStatus}
+- Current risk: ${latest.risk}%
+- Database records analyzed: ${summary.total_records_analyzed}
+- Normal records: ${normalRecords}
+- Predictive records: ${predictiveRecords}
+- Preventive records: ${preventiveRecords}
+- Reactive records: ${reactiveRecords}
+
+System assessment: ${isStable ? "Stable under the analyzed records." : "There were warning or shutdown-level records in the analyzed data."}`;
+  }
+
+  if (text.includes("cloud") || text.includes("wifi") || text.includes("connection")) {
+    return `Connection status:
+WiFi: ${latest.wifiStatus}
+Cloud: ${latest.cloudStatus}
+Device ID: ${latest.deviceId}
+Last dashboard update: ${latest.displayTimestamp}
+Database source: ${databaseContext.source ?? summary.source}`;
+  }
+
+  if (text.includes("event") || text.includes("recent") || text.includes("last")) {
+    if (!recentEvent) return "No recent live events available yet.";
+
+    return `Latest live event: ${recentEvent.title}
+Time: ${recentEvent.time}
+Detail: ${recentEvent.detail}
+
+Database range analyzed:
+${summary.time_range.from} to ${summary.time_range.to}`;
+  }
+
+  return `I checked the live dashboard and saved Supabase telemetry.
+
+Current state: ${latestStatus}
+Max temperature: ${dbLatest?.max_temp ?? latest.maxTemp}°C
+Current: ${dbLatest?.current ?? latest.current}A
+Relay: ${relayState}
+Records analyzed: ${summary.total_records_analyzed}
+
+Try asking about highest temperature, saved history, relay trip, sensor readings, current status, output states, risk, or cloud connection.`;
+}
+
+function AssistantPanel({
+  isOpen,
+  setIsOpen,
+  messages,
+  input,
+  setInput,
+  onSend,
+  quickPrompts,
+  isMobile,
+}) {
   return (
     <>
       <button
@@ -546,9 +804,14 @@ function AssistantPanel({ isOpen, setIsOpen, messages, input, setInput, onSend, 
       </button>
 
       {isOpen && (
-        <div className="fixed inset-0 z-50 bg-black/40 backdrop-blur-[2px]" onClick={() => setIsOpen(false)}>
+        <div
+          className="fixed inset-0 z-50 bg-black/40 backdrop-blur-[2px]"
+          onClick={() => setIsOpen(false)}
+        >
           <div
-            className={`absolute ${isMobile ? "inset-x-3 bottom-3 top-20" : "bottom-4 right-4 top-4 w-[380px]"} rounded-[28px] border border-white/10 bg-[#0b0b0b]/95 shadow-[0_20px_70px_rgba(0,0,0,0.45)] backdrop-blur-2xl`}
+            className={`absolute ${
+              isMobile ? "inset-x-3 bottom-3 top-20" : "bottom-4 right-4 top-4 w-[380px]"
+            } rounded-[28px] border border-white/10 bg-[#0b0b0b]/95 shadow-[0_20px_70px_rgba(0,0,0,0.45)] backdrop-blur-2xl`}
             onClick={(e) => e.stopPropagation()}
           >
             <div className="flex h-full flex-col overflow-hidden rounded-[28px]">
@@ -558,9 +821,14 @@ function AssistantPanel({ isOpen, setIsOpen, messages, input, setInput, onSend, 
                     <Bot className="h-4 w-4" />
                     EMBERMIND AI
                   </div>
-                  <div className="mt-1 text-xs text-white/45">Local dashboard assistant</div>
+                  <div className="mt-1 text-xs text-white/45">
+                    Database-aware dashboard assistant
+                  </div>
                 </div>
-                <button onClick={() => setIsOpen(false)} className="rounded-full border border-white/10 p-2 text-white/70 hover:bg-white/5">
+                <button
+                  onClick={() => setIsOpen(false)}
+                  className="rounded-full border border-white/10 p-2 text-white/70 hover:bg-white/5"
+                >
                   {isMobile ? <ChevronDown className="h-4 w-4" /> : <X className="h-4 w-4" />}
                 </button>
               </div>
@@ -568,7 +836,11 @@ function AssistantPanel({ isOpen, setIsOpen, messages, input, setInput, onSend, 
               <div className="border-b border-white/10 px-5 py-3">
                 <div className="flex flex-wrap gap-2">
                   {quickPrompts.map((prompt) => (
-                    <button key={prompt} onClick={() => onSend(prompt)} className="rounded-full border border-white/10 bg-white/5 px-3 py-1.5 text-xs text-white/75 hover:bg-white/10">
+                    <button
+                      key={prompt}
+                      onClick={() => onSend(prompt)}
+                      className="rounded-full border border-white/10 bg-white/5 px-3 py-1.5 text-xs text-white/75 hover:bg-white/10"
+                    >
                       {prompt}
                     </button>
                   ))}
@@ -577,8 +849,17 @@ function AssistantPanel({ isOpen, setIsOpen, messages, input, setInput, onSend, 
 
               <div className="flex-1 space-y-3 overflow-y-auto px-5 py-4">
                 {messages.map((message) => (
-                  <div key={message.id} className={`flex ${message.role === "user" ? "justify-end" : "justify-start"}`}>
-                    <div className={`max-w-[88%] whitespace-pre-line rounded-2xl px-4 py-3 text-sm leading-6 ${message.role === "user" ? "bg-white text-black" : "border border-white/10 bg-white/5 text-white/85"}`}>
+                  <div
+                    key={message.id}
+                    className={`flex ${message.role === "user" ? "justify-end" : "justify-start"}`}
+                  >
+                    <div
+                      className={`max-w-[88%] whitespace-pre-line rounded-2xl px-4 py-3 text-sm leading-6 ${
+                        message.role === "user"
+                          ? "bg-white text-black"
+                          : "border border-white/10 bg-white/5 text-white/85"
+                      }`}
+                    >
                       {message.text}
                     </div>
                   </div>
@@ -597,10 +878,13 @@ function AssistantPanel({ isOpen, setIsOpen, messages, input, setInput, onSend, 
                     value={input}
                     onChange={(e) => setInput(e.target.value)}
                     rows={1}
-                    placeholder="Ask about status, sensors, outputs, relay, SMS, or cloud link..."
-                    className="max-h-28 min-h-[46px] flex-1 resize-none rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-white placeholder:text-white/35 outline-none"
+                    placeholder="Ask about status, sensors, outputs, relay, SMS, saved logs..."
+                    className="max-h-28 min-h-[46px] flex-1 resize-none rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-white outline-none placeholder:text-white/35"
                   />
-                  <button type="submit" className="flex h-[46px] w-[46px] items-center justify-center rounded-2xl bg-white text-black transition hover:scale-[1.02]">
+                  <button
+                    type="submit"
+                    className="flex h-[46px] w-[46px] items-center justify-center rounded-2xl bg-white text-black transition hover:scale-[1.02]"
+                  >
                     <Send className="h-4 w-4" />
                   </button>
                 </div>
@@ -615,8 +899,11 @@ function AssistantPanel({ isOpen, setIsOpen, messages, input, setInput, onSend, 
 
 export default function EMBERMINDLiveDashboard() {
   const isMobile = useIsMobile();
+
   const [now, setNow] = useState(new Date());
   const [tick, setTick] = useState(0);
+  const [history, setHistory] = useState(() => (USE_DEMO_DATA ? seedDemoHistory() : []));
+
   const [events, setEvents] = useState([]);
   const [actionStreamMode, setActionStreamMode] = useState("live");
   const [savedActionLimit, setSavedActionLimit] = useState(50);
@@ -624,18 +911,18 @@ export default function EMBERMINDLiveDashboard() {
   const [savedActionLoading, setSavedActionLoading] = useState(false);
   const [savedActionError, setSavedActionError] = useState(null);
   const [savedActionSource, setSavedActionSource] = useState(null);
+
   const [connectionError, setConnectionError] = useState(null);
+
   const [assistantOpen, setAssistantOpen] = useState(false);
   const [assistantInput, setAssistantInput] = useState("");
   const [assistantMessages, setAssistantMessages] = useState([
     {
       id: "welcome",
       role: "assistant",
-      text: "EMBERMIND AI online. Ask about sensor readings, output states, status, risk, or cloud connection.",
+      text: "EMBERMIND AI online. I can use live dashboard data and saved Supabase telemetry. Ask about relay trips, highest temperature, status, sensors, risk, saved logs, or cloud connection.",
     },
   ]);
-
-  const [history, setHistory] = useState(() => (USE_DEMO_DATA ? seedDemoHistory() : []));
 
   useEffect(() => {
     const clock = setInterval(() => setNow(new Date()), 1000);
@@ -678,7 +965,6 @@ export default function EMBERMINDLiveDashboard() {
 
         const data = await response.json();
 
-        // Ignore older responses if a newer request was already started.
         if (stopped || currentRequest !== requestSequence) return;
 
         const point = normalizeTelemetry(data);
@@ -689,8 +975,6 @@ export default function EMBERMINDLiveDashboard() {
           setHistory((prev) => {
             const previousPoint = prev[prev.length - 1];
 
-            // Do not flood the chart with duplicate points when the backend has
-            // not received new ESP32 data yet.
             if (
               previousPoint &&
               previousPoint.timestamp === point.timestamp &&
@@ -769,13 +1053,14 @@ export default function EMBERMINDLiveDashboard() {
   const hasData = latest.hasData !== false;
   const currentState = latest.state;
   const stateMeta = STATE_META[currentState] ?? STATE_META[0];
-  const relayStatus = relayLabel(latest.relay);
+  const relayStatus = relayLabel(latest.relay, latest.state, latest.status);
 
   useEffect(() => {
     if (!latest || !hasData) return;
 
     const nowText = formatClock(new Date());
     const eventKey = connectionError ? "connection-error" : `state-${currentState}`;
+
     const severity = connectionError
       ? "high"
       : currentState === 3
@@ -848,6 +1133,7 @@ export default function EMBERMINDLiveDashboard() {
     const avgIR1 = history.reduce((sum, item) => sum + item.ir1, 0) / history.length;
     const avgIR2 = history.reduce((sum, item) => sum + item.ir2, 0) / history.length;
     const avgCurrent = history.reduce((sum, item) => sum + item.current, 0) / history.length;
+
     const stateCounts = history.reduce(
       (acc, item) => {
         acc[item.state] += 1;
@@ -868,11 +1154,13 @@ export default function EMBERMINDLiveDashboard() {
     "Explain current state",
     "Show sensor readings",
     "Show output states",
+    "Highest temperature",
+    "Summarize saved history",
     "Is the system stable?",
     "Check cloud connection",
   ];
 
-  function handleAssistantSend(rawText) {
+  async function handleAssistantSend(rawText) {
     const text = rawText.trim();
     if (!text) return;
 
@@ -882,30 +1170,45 @@ export default function EMBERMINDLiveDashboard() {
       text,
     };
 
-    setAssistantMessages((prev) => [...prev, userMessage]);
+    const loadingMessageId = `${Date.now()}-assistant-loading`;
+
+    setAssistantMessages((prev) => [
+      ...prev,
+      userMessage,
+      {
+        id: loadingMessageId,
+        role: "assistant",
+        text: "Checking live telemetry and saved Supabase records...",
+      },
+    ]);
+
     setAssistantInput("");
     setAssistantOpen(true);
 
     const context = { latest, stateMeta, relayStatus, events };
+    const databaseContext = await fetchEmbermindDatabaseContext();
+    const reply = buildDatabaseAwareReply(text, context, databaseContext);
 
-    setAssistantMessages((prev) => [
-      ...prev,
-      {
-        id: `${Date.now()}-assistant`,
-        role: "assistant",
-        text: buildAssistantReply(text, context),
-      },
-    ]);
+    setAssistantMessages((prev) =>
+      prev.map((message) =>
+        message.id === loadingMessageId
+          ? {
+              ...message,
+              text: reply,
+            }
+          : message
+      )
+    );
   }
 
   return (
     <div className="min-h-screen w-full overflow-hidden bg-[#050505] text-white">
       <div className="pointer-events-none absolute inset-0 overflow-hidden">
-        <div className="absolute -left-24 top-0 h-[280px] w-[280px] sm:h-[440px] sm:w-[440px] rounded-full bg-fuchsia-600/20 blur-3xl" />
-        <div className="absolute right-[-80px] top-[120px] h-[240px] w-[240px] sm:h-[420px] sm:w-[420px] rounded-full bg-cyan-500/15 blur-3xl" />
-        <div className="absolute bottom-[-100px] left-[28%] h-[240px] w-[240px] sm:h-[380px] sm:w-[380px] rounded-full bg-rose-500/15 blur-3xl" />
+        <div className="absolute -left-24 top-0 h-[280px] w-[280px] rounded-full bg-fuchsia-600/20 blur-3xl sm:h-[440px] sm:w-[440px]" />
+        <div className="absolute right-[-80px] top-[120px] h-[240px] w-[240px] rounded-full bg-cyan-500/15 blur-3xl sm:h-[420px] sm:w-[420px]" />
+        <div className="absolute bottom-[-100px] left-[28%] h-[240px] w-[240px] rounded-full bg-rose-500/15 blur-3xl sm:h-[380px] sm:w-[380px]" />
         <div className="absolute inset-0 bg-[radial-gradient(circle_at_top,rgba(255,255,255,0.08),transparent_30%),linear-gradient(to_bottom,rgba(255,255,255,0.02),transparent_40%)]" />
-        <div className="absolute inset-0 bg-[linear-gradient(rgba(255,255,255,0.04)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,0.04)_1px,transparent_1px)] bg-[size:48px_48px] sm:bg-[size:64px_64px] opacity-[0.08]" />
+        <div className="absolute inset-0 bg-[linear-gradient(rgba(255,255,255,0.04)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,0.04)_1px,transparent_1px)] bg-[size:48px_48px] opacity-[0.08] sm:bg-[size:64px_64px]" />
       </div>
 
       <div className="relative w-full px-3 py-3 sm:px-4 sm:py-4 lg:px-6 lg:py-6 2xl:px-8">
@@ -913,34 +1216,42 @@ export default function EMBERMINDLiveDashboard() {
           initial={{ opacity: 0, y: 18 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.45 }}
-          className="rounded-[28px] sm:rounded-[34px] border border-white/10 bg-white/5 p-4 sm:p-6 lg:p-7 backdrop-blur-2xl"
+          className="rounded-[28px] border border-white/10 bg-white/5 p-4 backdrop-blur-2xl sm:rounded-[34px] sm:p-6 lg:p-7"
         >
           <div className="grid gap-4 sm:gap-6 xl:grid-cols-[minmax(0,1fr)_360px] xl:items-start">
             <div className="min-w-0">
-              <div className="mb-3 inline-flex max-w-full items-center gap-2 rounded-full border border-white/10 bg-white/5 px-3 py-1 text-[10px] sm:text-[11px] uppercase tracking-[0.2em] sm:tracking-[0.28em] text-white/60">
+              <div className="mb-3 inline-flex max-w-full items-center gap-2 rounded-full border border-white/10 bg-white/5 px-3 py-1 text-[10px] uppercase tracking-[0.2em] text-white/60 sm:text-[11px] sm:tracking-[0.28em]">
                 <Radio className="h-3.5 w-3.5 shrink-0" />
                 <span className="truncate">EMBERMIND Live Monitoring Console</span>
               </div>
+
               <h1 className="max-w-[8ch] text-[2.4rem] font-black uppercase leading-[0.88] tracking-[-0.05em] text-white sm:text-4xl lg:text-5xl xl:text-[3.8rem] 2xl:text-[4.4rem]">
                 EMBERMIND Dashboard
               </h1>
-              <p className="mt-3 sm:mt-4 text-sm sm:text-base leading-6 text-white/65">
+
+              <p className="mt-3 text-sm leading-6 text-white/65 sm:mt-4 sm:text-base">
                 IR1 · IR2 · Current · Outputs · Cloud Telemetry
               </p>
             </div>
 
             <div className="flex w-full flex-col gap-3 xl:w-[360px] xl:justify-self-end xl:pl-6">
-              <div className="rounded-3xl border border-white/10 bg-black/30 px-4 py-4 overflow-hidden min-h-[112px] flex flex-col justify-center">
+              <div className="flex min-h-[112px] flex-col justify-center overflow-hidden rounded-3xl border border-white/10 bg-black/30 px-4 py-4">
                 <div className="text-[10px] uppercase tracking-[0.28em] text-white/45">Local time</div>
-                <div className="mt-2 h-[32px] flex items-center text-2xl font-semibold tracking-tight leading-none whitespace-nowrap">
+                <div className="mt-2 flex h-[32px] items-center whitespace-nowrap text-2xl font-semibold leading-none tracking-tight">
                   {formatClock(now)}
                 </div>
                 <div className="mt-2 text-xs text-white/45">Manila</div>
               </div>
 
-              <div className={`rounded-3xl border bg-black/30 px-4 py-4 overflow-hidden min-h-[112px] flex flex-col justify-center ${stateMeta.border} ${stateMeta.glow}`}>
-                <div className="text-[10px] uppercase tracking-[0.28em] text-white/45">Current state</div>
-                <div className={`mt-2 h-[32px] flex items-center text-2xl font-semibold tracking-tight leading-none whitespace-nowrap ${stateMeta.text}`}>
+              <div
+                className={`flex min-h-[112px] flex-col justify-center overflow-hidden rounded-3xl border bg-black/30 px-4 py-4 ${stateMeta.border} ${stateMeta.glow}`}
+              >
+                <div className="text-[10px] uppercase tracking-[0.28em] text-white/45">
+                  Current state
+                </div>
+                <div
+                  className={`mt-2 flex h-[32px] items-center whitespace-nowrap text-2xl font-semibold leading-none tracking-tight ${stateMeta.text}`}
+                >
                   {stateMeta.label}
                 </div>
                 <div className="mt-2 text-xs text-white/55">Class {currentState}</div>
@@ -948,11 +1259,31 @@ export default function EMBERMINDLiveDashboard() {
             </div>
           </div>
 
-          <div className="mt-6 grid gap-4 grid-cols-1 sm:grid-cols-2 xl:grid-cols-4">
-            <StatCard icon={Thermometer} label="Terminal Temperature Sensor" value={hasData ? `${latest.ir1}°C` : "--"} subvalue={hasData ? "MLX90614 Sensor 1" : "Waiting for ESP32"} />
-            <StatCard icon={Thermometer} label="Body Temperature Sensor" value={hasData ? `${latest.ir2}°C` : "--"} subvalue={hasData ? "MLX90614 Sensor 2" : "Waiting for ESP32"} />
-            <StatCard icon={Flame} label="Maximum Temperature" value={hasData ? `${latest.maxTemp}°C` : "--"} subvalue={hasData ? "Highest Hotspot Value" : "Waiting for ESP32"} />
-            <StatCard icon={Zap} label="Current" value={hasData ? `${latest.current}A` : "--"} subvalue={hasData ? "SCT-013 Current Sensor" : "Waiting for ESP32"} />
+          <div className="mt-6 grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
+            <StatCard
+              icon={Thermometer}
+              label="Terminal Temperature Sensor"
+              value={hasData ? `${latest.ir1}°C` : "--"}
+              subvalue={hasData ? "MLX90614 Sensor 1" : "Waiting for ESP32"}
+            />
+            <StatCard
+              icon={Thermometer}
+              label="Body Temperature Sensor"
+              value={hasData ? `${latest.ir2}°C` : "--"}
+              subvalue={hasData ? "MLX90614 Sensor 2" : "Waiting for ESP32"}
+            />
+            <StatCard
+              icon={Flame}
+              label="Maximum Temperature"
+              value={hasData ? `${latest.maxTemp}°C` : "--"}
+              subvalue={hasData ? "Highest Hotspot Value" : "Waiting for ESP32"}
+            />
+            <StatCard
+              icon={Zap}
+              label="Current"
+              value={hasData ? `${latest.current}A` : "--"}
+              subvalue={hasData ? "SCT-013 Current Sensor" : "Waiting for ESP32"}
+            />
           </div>
         </motion.div>
 
@@ -963,19 +1294,25 @@ export default function EMBERMINDLiveDashboard() {
           summary={summary}
         />
 
-        <div className="mt-4 sm:mt-6 grid gap-4 sm:gap-6 xl:grid-cols-[minmax(0,1.15fr)_minmax(320px,0.85fr)]">
+        <div className="mt-4 grid gap-4 sm:mt-6 sm:gap-6 xl:grid-cols-[minmax(0,1.15fr)_minmax(320px,0.85fr)]">
           <motion.div
             initial={{ opacity: 0, y: 18 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ delay: 0.1, duration: 0.45 }}
-            className="rounded-[28px] sm:rounded-[34px] border border-white/10 bg-white/5 p-4 sm:p-6 lg:p-7 backdrop-blur-2xl"
+            className="rounded-[28px] border border-white/10 bg-white/5 p-4 backdrop-blur-2xl sm:rounded-[34px] sm:p-6 lg:p-7"
           >
             <div className="mb-5 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
               <div>
-                <div className="text-[11px] uppercase tracking-[0.28em] text-white/45">Live telemetry</div>
-                <div className="mt-2 text-2xl sm:text-3xl font-black tracking-tight">IR Temperature + Current</div>
+                <div className="text-[11px] uppercase tracking-[0.28em] text-white/45">
+                  Live telemetry
+                </div>
+                <div className="mt-2 text-2xl font-black tracking-tight sm:text-3xl">
+                  IR Temperature + Current
+                </div>
               </div>
-              <div className="rounded-full border border-white/10 bg-black/25 px-3 py-1 text-xs text-white/55 self-start sm:self-auto">Live refresh</div>
+              <div className="self-start rounded-full border border-white/10 bg-black/25 px-3 py-1 text-xs text-white/55 sm:self-auto">
+                Live refresh
+              </div>
             </div>
 
             <div className="mb-4 flex flex-wrap gap-2">
@@ -985,9 +1322,12 @@ export default function EMBERMINDLiveDashboard() {
               <ChartLegendItem color={COLORS.current} label="Current" unit="Amperes" />
             </div>
 
-            <div className="h-[300px] sm:h-[350px] w-full rounded-[24px] sm:rounded-[28px] border border-white/10 bg-black/25 p-3">
+            <div className="h-[300px] w-full rounded-[24px] border border-white/10 bg-black/25 p-3 sm:h-[350px] sm:rounded-[28px]">
               <ResponsiveContainer width="100%" height="100%">
-                <LineChart data={history} margin={{ top: 20, right: isMobile ? 10 : 14, left: isMobile ? 4 : 10, bottom: 0 }}>
+                <LineChart
+                  data={history}
+                  margin={{ top: 20, right: isMobile ? 10 : 14, left: isMobile ? 4 : 10, bottom: 0 }}
+                >
                   <CartesianGrid stroke="rgba(255,255,255,0.08)" strokeDasharray="4 4" />
                   <XAxis
                     dataKey="t"
@@ -1003,8 +1343,6 @@ export default function EMBERMINDLiveDashboard() {
                     width={isMobile ? 30 : 42}
                     stroke="rgba(255,255,255,0.28)"
                     tick={{ fill: "rgba(255,255,255,0.42)", fontSize: isMobile ? 9 : 11 }}
-                    axisLine={{ stroke: "rgba(255,255,255,0.22)" }}
-                    tickLine={{ stroke: "rgba(255,255,255,0.18)" }}
                   />
                   <YAxis
                     yAxisId="right"
@@ -1012,8 +1350,6 @@ export default function EMBERMINDLiveDashboard() {
                     width={isMobile ? 30 : 42}
                     stroke="rgba(255,255,255,0.28)"
                     tick={{ fill: "rgba(255,255,255,0.42)", fontSize: isMobile ? 9 : 11 }}
-                    axisLine={{ stroke: "rgba(255,255,255,0.22)" }}
-                    tickLine={{ stroke: "rgba(255,255,255,0.18)" }}
                   />
                   <Tooltip content={<CustomTooltip />} />
                   <ReferenceLine yAxisId="left" y={60} stroke="rgba(56,189,248,0.38)" strokeDasharray="6 6" ifOverflow="extendDomain" />
@@ -1032,14 +1368,22 @@ export default function EMBERMINDLiveDashboard() {
             initial={{ opacity: 0, y: 18 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ delay: 0.15, duration: 0.45 }}
-            className="rounded-[28px] sm:rounded-[34px] border border-white/10 bg-white/5 p-4 sm:p-6 lg:p-7 backdrop-blur-2xl"
+            className="rounded-[28px] border border-white/10 bg-white/5 p-4 backdrop-blur-2xl sm:rounded-[34px] sm:p-6 lg:p-7"
           >
             <div className="mb-5 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
               <div>
-                <div className="text-[11px] uppercase tracking-[0.28em] text-white/45">Risk intensity</div>
-                <div className="mt-2 text-2xl sm:text-3xl font-black tracking-tight">Risk Trend</div>
+                <div className="text-[11px] uppercase tracking-[0.28em] text-white/45">
+                  Risk intensity
+                </div>
+                <div className="mt-2 text-2xl font-black tracking-tight sm:text-3xl">
+                  Risk Trend
+                </div>
               </div>
-              <div className={`h-[28px] min-w-[92px] self-start sm:self-auto flex items-center justify-center rounded-full px-3 text-xs font-semibold whitespace-nowrap ${latest.risk >= 70 ? "bg-rose-500/15 text-rose-200" : "bg-white/10 text-white/70"}`}>
+              <div
+                className={`flex h-[28px] min-w-[92px] items-center justify-center self-start rounded-full px-3 text-xs font-semibold sm:self-auto ${
+                  latest.risk >= 70 ? "bg-rose-500/15 text-rose-200" : "bg-white/10 text-white/70"
+                }`}
+              >
                 {latest.risk >= 70 ? "Escalated" : "Contained"}
               </div>
             </div>
@@ -1048,17 +1392,38 @@ export default function EMBERMINDLiveDashboard() {
               <ChartLegendItem color={COLORS.risk} label="Risk" unit="Computed %" />
             </div>
 
-            <div className="h-[300px] sm:h-[350px] w-full rounded-[24px] sm:rounded-[28px] border border-white/10 bg-black/25 p-3">
+            <div className="h-[300px] w-full rounded-[24px] border border-white/10 bg-black/25 p-3 sm:h-[350px] sm:rounded-[28px]">
               <ResponsiveContainer width="100%" height="100%">
-                <AreaChart data={history} margin={{ top: 20, right: isMobile ? 10 : 14, left: isMobile ? 6 : 14, bottom: 0 }}>
+                <AreaChart
+                  data={history}
+                  margin={{ top: 20, right: isMobile ? 10 : 14, left: isMobile ? 6 : 14, bottom: 0 }}
+                >
                   <CartesianGrid stroke="rgba(255,255,255,0.08)" strokeDasharray="4 4" />
-                  <XAxis dataKey="t" stroke="rgba(255,255,255,0.28)" tick={{ fill: "rgba(255,255,255,0.42)", fontSize: isMobile ? 9 : 11 }} minTickGap={isMobile ? 60 : 28} interval="preserveStartEnd" />
-                  <YAxis width={isMobile ? 30 : 42} stroke="rgba(255,255,255,0.28)" tick={{ fill: "rgba(255,255,255,0.42)", fontSize: isMobile ? 9 : 11 }} domain={[0, 100]} />
+                  <XAxis
+                    dataKey="t"
+                    stroke="rgba(255,255,255,0.28)"
+                    tick={{ fill: "rgba(255,255,255,0.42)", fontSize: isMobile ? 9 : 11 }}
+                    minTickGap={isMobile ? 60 : 28}
+                    interval="preserveStartEnd"
+                  />
+                  <YAxis
+                    width={isMobile ? 30 : 42}
+                    stroke="rgba(255,255,255,0.28)"
+                    tick={{ fill: "rgba(255,255,255,0.42)", fontSize: isMobile ? 9 : 11 }}
+                    domain={[0, 100]}
+                  />
                   <Tooltip content={<CustomTooltip />} />
                   <ReferenceLine y={35} stroke="rgba(56,189,248,0.38)" strokeDasharray="6 6" ifOverflow="extendDomain" />
                   <ReferenceLine y={60} stroke="rgba(251,191,36,0.38)" strokeDasharray="6 6" ifOverflow="extendDomain" />
                   <ReferenceLine y={80} stroke="rgba(244,63,94,0.42)" strokeDasharray="6 6" ifOverflow="extendDomain" />
-                  <Area type="monotone" dataKey="risk" name="Risk" stroke={COLORS.risk} fill="url(#riskFill)" strokeWidth={isMobile ? 2 : 2.5} />
+                  <Area
+                    type="monotone"
+                    dataKey="risk"
+                    name="Risk"
+                    stroke={COLORS.risk}
+                    fill="url(#riskFill)"
+                    strokeWidth={isMobile ? 2 : 2.5}
+                  />
                   <defs>
                     <linearGradient id="riskFill" x1="0" y1="0" x2="0" y2="1">
                       <stop offset="0%" stopColor="#f43f5e" stopOpacity={0.65} />
@@ -1071,19 +1436,39 @@ export default function EMBERMINDLiveDashboard() {
           </motion.div>
         </div>
 
-        <div className="mt-4 sm:mt-6 grid gap-4 sm:gap-6 xl:grid-cols-4">
-          <StatCard icon={AlertTriangle} label="Light" value={hasData ? outputLabel(latest.light) : "--"} subvalue="Warning Light" />
-          <StatCard icon={Radio} label="Buzzer" value={hasData ? outputLabel(latest.buzzer) : "--"} subvalue="Audible Alert" />
-          <StatCard icon={Power} label="Relay" value={hasData ? relayStatus : "--"} subvalue="Active-low Relay" />
-          <StatCard icon={Send} label="SMS" value={hasData ? (latest.smsSent ? "SENT" : "READY") : "--"} subvalue="SIM800L Alert State" />
+        <div className="mt-4 grid gap-4 sm:mt-6 sm:gap-6 xl:grid-cols-4">
+          <StatCard
+            icon={AlertTriangle}
+            label="Light"
+            value={hasData ? outputLabel(latest.light, latest.state, latest.status, "light") : "--"}
+            subvalue="Warning Light"
+          />
+          <StatCard
+            icon={Radio}
+            label="Buzzer"
+            value={hasData ? outputLabel(latest.buzzer, latest.state, latest.status, "buzzer") : "--"}
+            subvalue="Audible Alert"
+          />
+          <StatCard
+            icon={Power}
+            label="Relay"
+            value={hasData ? relayStatus : "--"}
+            subvalue={hasData ? relayDetail(latest.relay, latest.state, latest.status) : "Active-low Relay"}
+          />
+          <StatCard
+            icon={Send}
+            label="SMS"
+            value={hasData ? (latest.smsSent ? "SENT" : "READY") : "--"}
+            subvalue="SIM800L Alert State"
+          />
         </div>
 
-        <div className="mt-4 sm:mt-6 grid gap-4 sm:gap-6 xl:grid-cols-[minmax(280px,0.8fr)_minmax(0,1.2fr)]">
+        <div className="mt-4 grid gap-4 sm:mt-6 sm:gap-6 xl:grid-cols-[minmax(280px,0.8fr)_minmax(0,1.2fr)]">
           <motion.div
             initial={{ opacity: 0, y: 18 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ delay: 0.2, duration: 0.45 }}
-            className="rounded-[28px] sm:rounded-[34px] border border-white/10 bg-white/5 p-4 sm:p-6 lg:p-7 backdrop-blur-2xl"
+            className="rounded-[28px] border border-white/10 bg-white/5 p-4 backdrop-blur-2xl sm:rounded-[34px] sm:p-6 lg:p-7"
           >
             <div className="mb-5 flex flex-col gap-4">
               <div className="flex items-end justify-between gap-4">
@@ -1091,11 +1476,11 @@ export default function EMBERMINDLiveDashboard() {
                   <div className="text-[11px] uppercase tracking-[0.28em] text-white/45">
                     Action stream
                   </div>
-                  <div className="mt-2 text-2xl sm:text-3xl font-black tracking-tight">
+                  <div className="mt-2 text-2xl font-black tracking-tight sm:text-3xl">
                     {actionStreamMode === "live" ? "Recent Events" : "Saved Logs"}
                   </div>
                 </div>
-                <Activity className="h-5 w-5 text-white/45 shrink-0" />
+                <Activity className="h-5 w-5 shrink-0 text-white/45" />
               </div>
 
               <div className="flex flex-col gap-3">
@@ -1194,38 +1579,90 @@ export default function EMBERMINDLiveDashboard() {
             )}
           </motion.div>
 
-          <motion.div initial={{ opacity: 0, y: 18 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.25, duration: 0.45 }} className="rounded-[28px] sm:rounded-[34px] border border-white/10 bg-white/5 p-4 sm:p-6 lg:p-7 backdrop-blur-2xl">
+          <motion.div
+            initial={{ opacity: 0, y: 18 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ delay: 0.25, duration: 0.45 }}
+            className="rounded-[28px] border border-white/10 bg-white/5 p-4 backdrop-blur-2xl sm:rounded-[34px] sm:p-6 lg:p-7"
+          >
             <div className="mb-5 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
               <div>
-                <div className="text-[11px] uppercase tracking-[0.28em] text-white/45">Architecture snapshot</div>
-                <div className="mt-2 text-2xl sm:text-3xl font-black tracking-tight">System Overview</div>
+                <div className="text-[11px] uppercase tracking-[0.28em] text-white/45">
+                  Architecture snapshot
+                </div>
+                <div className="mt-2 text-2xl font-black tracking-tight sm:text-3xl">
+                  System Overview
+                </div>
               </div>
-              <div className="rounded-full border border-white/10 bg-black/25 px-3 py-1 text-xs text-white/55 self-start sm:self-auto">Interim Cloud Architecture</div>
+              <div className="self-start rounded-full border border-white/10 bg-black/25 px-3 py-1 text-xs text-white/55 sm:self-auto">
+                Interim Cloud Architecture
+              </div>
             </div>
 
-            <div className="grid gap-4 grid-cols-1 md:grid-cols-3">
+            <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
               <div className="rounded-[24px] border border-white/10 bg-black/30 p-5">
-                <div className="flex items-center gap-2 text-sm text-white/50"><Thermometer className="h-4 w-4" /> Sensor Edge Node</div>
+                <div className="flex items-center gap-2 text-sm text-white/50">
+                  <Thermometer className="h-4 w-4" /> Sensor Edge Node
+                </div>
                 <div className="mt-3 text-2xl font-black">ESP32</div>
-                <div className="mt-2 text-sm leading-6 text-white/60">Reads IR1, IR2, current, controls outputs, and sends telemetry to the cloud.</div>
+                <div className="mt-2 text-sm leading-6 text-white/60">
+                  Reads IR1, IR2, current, controls outputs, and sends telemetry to the cloud.
+                </div>
               </div>
+
               <div className="rounded-[24px] border border-white/10 bg-black/30 p-5">
-                <div className="flex items-center gap-2 text-sm text-white/50"><Cpu className="h-4 w-4" /> Cloud Dashboard</div>
+                <div className="flex items-center gap-2 text-sm text-white/50">
+                  <Cpu className="h-4 w-4" /> Cloud Dashboard
+                </div>
                 <div className="mt-3 text-2xl font-black">Web Monitor</div>
-                <div className="mt-2 text-sm leading-6 text-white/60">Displays live telemetry, risk, system state, events, and output conditions.</div>
+                <div className="mt-2 text-sm leading-6 text-white/60">
+                  Displays live telemetry, risk, system state, events, and output conditions.
+                </div>
               </div>
+
               <div className="rounded-[24px] border border-white/10 bg-black/30 p-5">
-                <div className="flex items-center gap-2 text-sm text-white/50"><ShieldAlert className="h-4 w-4" /> Protection Layer</div>
+                <div className="flex items-center gap-2 text-sm text-white/50">
+                  <ShieldAlert className="h-4 w-4" /> Protection Layer
+                </div>
                 <div className="mt-3 text-2xl font-black">Outputs</div>
-                <div className="mt-2 text-sm leading-6 text-white/60">Warning light, buzzer, active-low relay, and SIM800L SMS alert handling.</div>
+                <div className="mt-2 text-sm leading-6 text-white/60">
+                  Warning light, buzzer, relay control, and SIM800L SMS alert handling.
+                </div>
               </div>
             </div>
 
-            <div className="mt-4 grid gap-4 grid-cols-1 md:grid-cols-4">
-              <div className="rounded-3xl border border-white/10 bg-white/[0.03] p-4"><div className="flex items-center gap-2 text-sm text-white/50"><TimerReset className="h-4 w-4" /> Avg IR1</div><div className="mt-3 text-3xl font-black">{summary.avgIR1}°C</div><div className="text-sm text-white/45">Rolling average</div></div>
-              <div className="rounded-3xl border border-white/10 bg-white/[0.03] p-4"><div className="flex items-center gap-2 text-sm text-white/50"><TimerReset className="h-4 w-4" /> Avg IR2</div><div className="mt-3 text-3xl font-black">{summary.avgIR2}°C</div><div className="text-sm text-white/45">Rolling average</div></div>
-              <div className="rounded-3xl border border-white/10 bg-white/[0.03] p-4"><div className="flex items-center gap-2 text-sm text-white/50"><Zap className="h-4 w-4" /> Avg Current</div><div className="mt-3 text-3xl font-black">{summary.avgCurrent}A</div><div className="text-sm text-white/45">Rolling current</div></div>
-              <div className="rounded-3xl border border-white/10 bg-white/[0.03] p-4"><div className="flex items-center gap-2 text-sm text-white/50"><Gauge className="h-4 w-4" /> Device ID</div><div className="mt-3 text-lg font-black truncate">{latest.deviceId}</div><div className="text-sm text-white/45">Last: {latest.displayTimestamp}</div></div>
+            <div className="mt-4 grid grid-cols-1 gap-4 md:grid-cols-4">
+              <div className="rounded-3xl border border-white/10 bg-white/[0.03] p-4">
+                <div className="flex items-center gap-2 text-sm text-white/50">
+                  <TimerReset className="h-4 w-4" /> Avg IR1
+                </div>
+                <div className="mt-3 text-3xl font-black">{summary.avgIR1}°C</div>
+                <div className="text-sm text-white/45">Rolling average</div>
+              </div>
+
+              <div className="rounded-3xl border border-white/10 bg-white/[0.03] p-4">
+                <div className="flex items-center gap-2 text-sm text-white/50">
+                  <TimerReset className="h-4 w-4" /> Avg IR2
+                </div>
+                <div className="mt-3 text-3xl font-black">{summary.avgIR2}°C</div>
+                <div className="text-sm text-white/45">Rolling average</div>
+              </div>
+
+              <div className="rounded-3xl border border-white/10 bg-white/[0.03] p-4">
+                <div className="flex items-center gap-2 text-sm text-white/50">
+                  <Zap className="h-4 w-4" /> Avg Current
+                </div>
+                <div className="mt-3 text-3xl font-black">{summary.avgCurrent}A</div>
+                <div className="text-sm text-white/45">Rolling current</div>
+              </div>
+
+              <div className="rounded-3xl border border-white/10 bg-white/[0.03] p-4">
+                <div className="flex items-center gap-2 text-sm text-white/50">
+                  <Gauge className="h-4 w-4" /> Device ID
+                </div>
+                <div className="mt-3 truncate text-lg font-black">{latest.deviceId}</div>
+                <div className="text-sm text-white/45">Last: {latest.displayTimestamp}</div>
+              </div>
             </div>
           </motion.div>
         </div>
