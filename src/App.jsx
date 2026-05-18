@@ -34,13 +34,19 @@ import {
 
 const USE_DEMO_DATA = false;
 
-const API_URL = "https://neurobreak-api.onrender.com/api/latest";
-const HISTORY_API_URL = "https://neurobreak-api.onrender.com/api/history";
-const EMBERMIND_AI_API_URL = "https://neurobreak-api.onrender.com/api/embermind-ai";
+const API_BASE_URL = "https://neurobreak-api.onrender.com";
+const API_URL = `${API_BASE_URL}/api/latest`;
+const HISTORY_API_URL = `${API_BASE_URL}/api/history`;
+const EMBERMIND_AI_API_URL = `${API_BASE_URL}/api/embermind-ai`;
+const WEBSOCKET_URL = API_BASE_URL.replace(/^https:/, "wss:").replace(/^http:/, "ws:") + "/ws";
 
 const MAX_HISTORY_POINTS = 36;
-const LIVE_REFRESH_MS = 300;
+
+// WebSocket is now the main realtime channel.
+// Polling is kept as backup only, so it is intentionally slower.
+const LIVE_REFRESH_MS = 5000;
 const LIVE_FETCH_TIMEOUT_MS = 1500;
+const WEBSOCKET_RECONNECT_MS = 1500;
 
 const COLORS = {
   ir1: "#ffffff",
@@ -235,6 +241,32 @@ function normalizeTelemetry(data) {
   };
 }
 
+function normalizeWebSocketPayload(message) {
+  if (!message) return null;
+
+  if (message.type === "telemetry") {
+    return message.payload ?? null;
+  }
+
+  if (message.type === "connection") {
+    return message.latest ?? null;
+  }
+
+  if (message.type === "reset") {
+    return {
+      has_data: false,
+      device_id: null,
+      message: "Local telemetry was reset",
+    };
+  }
+
+  if (message.ir1 !== undefined || message.max_temp !== undefined || message.current !== undefined) {
+    return message;
+  }
+
+  return null;
+}
+
 function createDemoPoint(previous) {
   const last = previous ?? {
     ir1: 31.25,
@@ -410,7 +442,28 @@ function CustomTooltip({ active, payload, label }) {
   );
 }
 
-function SystemLinkPanel({ latest, currentState, connectionError, summary }) {
+function SystemLinkPanel({ latest, currentState, connectionError, summary, realtimeStatus }) {
+  const isRealtimeConnected = realtimeStatus === "connected";
+  const isRealtimeConnecting = realtimeStatus === "connecting" || realtimeStatus === "reconnecting";
+  const isDemo = latest.cloudStatus === "demo";
+
+  let linkLabel = "Online";
+  let linkClass = "bg-emerald-500/15 text-emerald-200";
+
+  if (connectionError) {
+    linkLabel = "Backup Polling";
+    linkClass = "bg-amber-500/15 text-amber-200";
+  } else if (isDemo) {
+    linkLabel = "Demo Mode";
+    linkClass = "bg-sky-500/15 text-sky-200";
+  } else if (isRealtimeConnected) {
+    linkLabel = "Realtime";
+    linkClass = "bg-emerald-500/15 text-emerald-200";
+  } else if (isRealtimeConnecting) {
+    linkLabel = "Connecting";
+    linkClass = "bg-sky-500/15 text-sky-200";
+  }
+
   return (
     <motion.div
       initial={{ opacity: 0, y: 18 }}
@@ -424,20 +477,14 @@ function SystemLinkPanel({ latest, currentState, connectionError, summary }) {
             System link
           </div>
           <div className="mt-2 text-xl font-black tracking-tight sm:text-2xl">
-            ESP32 → Cloud Dashboard
+            ESP32 → Cloud → WebSocket Dashboard
           </div>
         </div>
 
         <div
-          className={`flex h-[28px] min-w-[96px] items-center justify-center self-start rounded-full px-3 text-xs font-semibold sm:self-auto ${
-            connectionError
-              ? "bg-amber-500/15 text-amber-200"
-              : latest.cloudStatus === "demo"
-                ? "bg-sky-500/15 text-sky-200"
-                : "bg-emerald-500/15 text-emerald-200"
-          }`}
+          className={`flex h-[28px] min-w-[112px] items-center justify-center self-start rounded-full px-3 text-xs font-semibold sm:self-auto ${linkClass}`}
         >
-          {connectionError ? "Offline" : latest.cloudStatus === "demo" ? "Demo Mode" : "Online"}
+          {linkLabel}
         </div>
       </div>
 
@@ -481,7 +528,9 @@ function SystemLinkPanel({ latest, currentState, connectionError, summary }) {
                 WiFi / Transport
               </div>
               <div className="mt-3 text-xl font-black capitalize">{latest.wifiStatus}</div>
-              <div className="mt-1 text-sm text-white/45">ESP32 Telemetry Link</div>
+              <div className="mt-1 text-sm text-white/45">
+                {isRealtimeConnected ? "WebSocket Realtime Link" : "HTTP Backup Link"}
+              </div>
             </div>
 
             <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
@@ -681,6 +730,7 @@ export default function EMBERMINDLiveDashboard() {
   const [savedActionSource, setSavedActionSource] = useState(null);
 
   const [connectionError, setConnectionError] = useState(null);
+  const [realtimeStatus, setRealtimeStatus] = useState(USE_DEMO_DATA ? "demo" : "connecting");
 
   const [assistantOpen, setAssistantOpen] = useState(false);
   const [assistantInput, setAssistantInput] = useState("");
@@ -692,99 +742,220 @@ export default function EMBERMINDLiveDashboard() {
     },
   ]);
 
+  const appendTelemetryPoint = useCallback((point) => {
+    if (!point.hasData) {
+      setHistory([]);
+      return;
+    }
+
+    setHistory((prev) => {
+      const previousPoint = prev[prev.length - 1];
+
+      if (
+        previousPoint &&
+        previousPoint.timestamp === point.timestamp &&
+        previousPoint.ir1 === point.ir1 &&
+        previousPoint.ir2 === point.ir2 &&
+        previousPoint.maxTemp === point.maxTemp &&
+        previousPoint.current === point.current &&
+        previousPoint.state === point.state &&
+        previousPoint.light === point.light &&
+        previousPoint.buzzer === point.buzzer &&
+        previousPoint.relay === point.relay
+      ) {
+        return [...prev.slice(0, -1), point];
+      }
+
+      return [...prev.slice(-(MAX_HISTORY_POINTS - 1)), point];
+    });
+  }, []);
+
+  const fetchLiveTelemetryBackup = useCallback(async () => {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), LIVE_FETCH_TIMEOUT_MS);
+
+    try {
+      const response = await fetch(`${API_URL}?t=${Date.now()}`, {
+        cache: "no-store",
+        signal: controller.signal,
+        headers: {
+          "Cache-Control": "no-cache",
+          Pragma: "no-cache",
+        },
+      });
+
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+
+      const data = await response.json();
+      const point = normalizeTelemetry(data);
+
+      appendTelemetryPoint(point);
+      setTick((value) => value + 1);
+
+      if (point.hasData) {
+        setConnectionError(null);
+      }
+    } finally {
+      clearTimeout(timeout);
+    }
+  }, [appendTelemetryPoint]);
+
   useEffect(() => {
     const clock = setInterval(() => setNow(new Date()), 1000);
     return () => clearInterval(clock);
   }, []);
 
   useEffect(() => {
+    if (USE_DEMO_DATA) {
+      const demoInterval = setInterval(() => {
+        setHistory((prev) => {
+          const next = createDemoPoint(prev[prev.length - 1]);
+          return [...prev.slice(-(MAX_HISTORY_POINTS - 1)), next];
+        });
+        setConnectionError(null);
+        setRealtimeStatus("demo");
+        setTick((value) => value + 1);
+      }, 300);
+
+      return () => clearInterval(demoInterval);
+    }
+
     let stopped = false;
-    let timeoutId = null;
-    let requestSequence = 0;
+    let socket = null;
+    let reconnectTimer = null;
+    let backupPollingTimer = null;
 
-    async function fetchLiveTelemetry() {
-      const currentRequest = requestSequence + 1;
-      requestSequence = currentRequest;
+    function clearReconnectTimer() {
+      if (reconnectTimer) {
+        clearTimeout(reconnectTimer);
+        reconnectTimer = null;
+      }
+    }
 
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), LIVE_FETCH_TIMEOUT_MS);
+    function clearBackupPollingTimer() {
+      if (backupPollingTimer) {
+        clearTimeout(backupPollingTimer);
+        backupPollingTimer = null;
+      }
+    }
+
+    async function runBackupPollingLoop() {
+      if (stopped) return;
 
       try {
-        if (USE_DEMO_DATA) {
-          setHistory((prev) => {
-            const next = createDemoPoint(prev[prev.length - 1]);
-            return [...prev.slice(-(MAX_HISTORY_POINTS - 1)), next];
-          });
-          setConnectionError(null);
-          setTick((value) => value + 1);
-          return;
-        }
-
-        const response = await fetch(`${API_URL}?t=${Date.now()}`, {
-          cache: "no-store",
-          signal: controller.signal,
-          headers: {
-            "Cache-Control": "no-cache",
-            Pragma: "no-cache",
-          },
-        });
-
-        if (!response.ok) throw new Error(`HTTP ${response.status}`);
-
-        const data = await response.json();
-
-        if (stopped || currentRequest !== requestSequence) return;
-
-        const point = normalizeTelemetry(data);
-
-        if (!point.hasData) {
-          setHistory([]);
-        } else {
-          setHistory((prev) => {
-            const previousPoint = prev[prev.length - 1];
-
-            if (
-              previousPoint &&
-              previousPoint.timestamp === point.timestamp &&
-              previousPoint.ir1 === point.ir1 &&
-              previousPoint.ir2 === point.ir2 &&
-              previousPoint.maxTemp === point.maxTemp &&
-              previousPoint.current === point.current &&
-              previousPoint.state === point.state &&
-              previousPoint.light === point.light &&
-              previousPoint.buzzer === point.buzzer &&
-              previousPoint.relay === point.relay
-            ) {
-              return [...prev.slice(0, -1), point];
-            }
-
-            return [...prev.slice(-(MAX_HISTORY_POINTS - 1)), point];
-          });
-        }
-
-        setConnectionError(null);
-        setTick((value) => value + 1);
+        await fetchLiveTelemetryBackup();
       } catch (error) {
-        if (error.name !== "AbortError") {
-          setConnectionError(error.message || "Connection failed");
+        if (!stopped) {
+          setConnectionError(error.name === "AbortError" ? "Backup polling timed out" : error.message || "Connection failed");
           setTick((value) => value + 1);
         }
       } finally {
-        clearTimeout(timeout);
-
         if (!stopped) {
-          timeoutId = setTimeout(fetchLiveTelemetry, LIVE_REFRESH_MS);
+          backupPollingTimer = setTimeout(runBackupPollingLoop, LIVE_REFRESH_MS);
         }
       }
     }
 
-    fetchLiveTelemetry();
+    function scheduleReconnect() {
+      if (stopped) return;
+
+      clearReconnectTimer();
+
+      reconnectTimer = setTimeout(() => {
+        if (!stopped) {
+          connectWebSocket();
+        }
+      }, WEBSOCKET_RECONNECT_MS);
+    }
+
+    function connectWebSocket() {
+      if (stopped) return;
+
+      try {
+        setRealtimeStatus((previous) => (previous === "connected" ? "connected" : "connecting"));
+
+        socket = new WebSocket(WEBSOCKET_URL);
+
+        socket.onopen = () => {
+          if (stopped) return;
+
+          setRealtimeStatus("connected");
+          setConnectionError(null);
+          clearReconnectTimer();
+
+          if (socket?.readyState === WebSocket.OPEN) {
+            socket.send("ping");
+          }
+        };
+
+        socket.onmessage = (event) => {
+          if (stopped) return;
+
+          try {
+            const message = JSON.parse(event.data);
+            const payload = normalizeWebSocketPayload(message);
+
+            if (!payload) return;
+
+            const point = normalizeTelemetry(payload);
+
+            appendTelemetryPoint(point);
+
+            if (message.type === "reset") {
+              setConnectionError(null);
+            }
+
+            setRealtimeStatus("connected");
+            setConnectionError(null);
+            setTick((value) => value + 1);
+          } catch (error) {
+            console.error("WebSocket message parse error:", error);
+          }
+        };
+
+        socket.onerror = () => {
+          if (stopped) return;
+
+          setRealtimeStatus("reconnecting");
+          setConnectionError("Realtime WebSocket warning. Using backup polling.");
+        };
+
+        socket.onclose = () => {
+          if (stopped) return;
+
+          setRealtimeStatus("reconnecting");
+          setConnectionError("Realtime WebSocket disconnected. Using backup polling.");
+          scheduleReconnect();
+        };
+      } catch (error) {
+        if (stopped) return;
+
+        setRealtimeStatus("reconnecting");
+        setConnectionError(error.message || "Failed to start realtime WebSocket");
+        scheduleReconnect();
+      }
+    }
+
+    connectWebSocket();
+    runBackupPollingLoop();
 
     return () => {
       stopped = true;
-      if (timeoutId) clearTimeout(timeoutId);
+      clearReconnectTimer();
+      clearBackupPollingTimer();
+
+      if (socket) {
+        socket.onopen = null;
+        socket.onmessage = null;
+        socket.onerror = null;
+        socket.onclose = null;
+
+        if (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING) {
+          socket.close();
+        }
+      }
     };
-  }, []);
+  }, [appendTelemetryPoint, fetchLiveTelemetryBackup]);
 
   const fetchSavedActionLogs = useCallback(async () => {
     try {
@@ -850,7 +1021,7 @@ export default function EMBERMINDLiveDashboard() {
             : "Normal monitoring";
 
     const detail = connectionError
-      ? `Dashboard could not fetch live telemetry: ${connectionError}`
+      ? `Dashboard warning: ${connectionError}`
       : currentState === 0
         ? `ESP32 stream stable. IR1 ${latest.ir1}°C / IR2 ${latest.ir2}°C / ${latest.current}A sampled.`
         : `${stateMeta.label} state from max temp ${latest.maxTemp}°C and current ${latest.current}A. Action: ${getActionLabel(currentState)}.`;
@@ -997,7 +1168,7 @@ export default function EMBERMINDLiveDashboard() {
               </h1>
 
               <p className="mt-3 text-sm leading-6 text-white/65 sm:mt-4 sm:text-base">
-                IR1 · IR2 · Current · Outputs · Cloud Telemetry
+                IR1 · IR2 · Current · Outputs · WebSocket Cloud Telemetry
               </p>
             </div>
 
@@ -1059,6 +1230,7 @@ export default function EMBERMINDLiveDashboard() {
           currentState={currentState}
           connectionError={connectionError}
           summary={summary}
+          realtimeStatus={realtimeStatus}
         />
 
         <div className="mt-4 grid gap-4 sm:mt-6 sm:gap-6 xl:grid-cols-[minmax(0,1.15fr)_minmax(320px,0.85fr)]">
@@ -1078,7 +1250,7 @@ export default function EMBERMINDLiveDashboard() {
                 </div>
               </div>
               <div className="self-start rounded-full border border-white/10 bg-black/25 px-3 py-1 text-xs text-white/55 sm:self-auto">
-                Live refresh
+                {realtimeStatus === "connected" ? "WebSocket realtime" : "Backup polling"}
               </div>
             </div>
 
@@ -1362,7 +1534,7 @@ export default function EMBERMINDLiveDashboard() {
                 </div>
               </div>
               <div className="self-start rounded-full border border-white/10 bg-black/25 px-3 py-1 text-xs text-white/55 sm:self-auto">
-                Interim Cloud Architecture
+                WebSocket Cloud Architecture
               </div>
             </div>
 
@@ -1379,11 +1551,11 @@ export default function EMBERMINDLiveDashboard() {
 
               <div className="rounded-[24px] border border-white/10 bg-black/30 p-5">
                 <div className="flex items-center gap-2 text-sm text-white/50">
-                  <Cpu className="h-4 w-4" /> Cloud Dashboard
+                  <Cpu className="h-4 w-4" /> Realtime Dashboard
                 </div>
-                <div className="mt-3 text-2xl font-black">Web Monitor</div>
+                <div className="mt-3 text-2xl font-black">WebSocket</div>
                 <div className="mt-2 text-sm leading-6 text-white/60">
-                  Displays live telemetry, risk, system state, events, and output conditions.
+                  Receives live telemetry broadcasts from the Render backend with HTTP fallback.
                 </div>
               </div>
 
