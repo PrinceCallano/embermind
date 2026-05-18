@@ -36,7 +36,7 @@ const USE_DEMO_DATA = false;
 
 const API_URL = "https://neurobreak-api.onrender.com/api/latest";
 const HISTORY_API_URL = "https://neurobreak-api.onrender.com/api/history";
-const AI_CONTEXT_API_URL = "https://neurobreak-api.onrender.com/api/ai-context";
+const EMBERMIND_AI_API_URL = "https://neurobreak-api.onrender.com/api/embermind-ai";
 
 const MAX_HISTORY_POINTS = 36;
 const LIVE_REFRESH_MS = 300;
@@ -520,265 +520,33 @@ function SystemLinkPanel({ latest, currentState, connectionError, summary }) {
   );
 }
 
-async function fetchEmbermindDatabaseContext() {
+async function askEmbermindAI(message) {
   try {
-    const response = await fetch(`${AI_CONTEXT_API_URL}?limit=300&t=${Date.now()}`, {
-      cache: "no-store",
+    const response = await fetch(EMBERMIND_AI_API_URL, {
+      method: "POST",
       headers: {
-        "Cache-Control": "no-cache",
-        Pragma: "no-cache",
+        "Content-Type": "application/json",
       },
+      body: JSON.stringify({
+        message,
+        limit: 300,
+      }),
     });
 
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    return await response.json();
+    const data = await response.json();
+
+    if (!response.ok || !data.success) {
+      throw new Error(data?.answer || data?.error || "Embermind AI failed");
+    }
+
+    return data.answer;
   } catch (error) {
-    return {
-      success: false,
-      error: error.message || "Failed to fetch Embermind AI database context",
-    };
+    return `Embermind AI could not reach the backend AI endpoint.
+
+Reason: ${error.message}
+
+Please check if /api/embermind-ai is deployed on Render and if GEMINI_API_KEY is configured.`;
   }
-}
-
-function buildLocalAssistantReply(input, context) {
-  const text = input.toLowerCase().trim();
-  const { latest, stateMeta, events } = context;
-  const recentEvent = events?.[0];
-
-  if (!text) {
-    return "I can help with status, risk, sensor readings, output states, cloud link, saved history, and recent events.";
-  }
-
-  if (text.includes("status") || text.includes("current state") || text === "state") {
-    return `State: ${stateMeta.label}
-IR1: ${latest.ir1}°C
-IR2: ${latest.ir2}°C
-Max temperature: ${latest.maxTemp}°C
-Current: ${latest.current}A
-Risk: ${latest.risk}%
-Action: ${getActionLabel(latest.state)}.`;
-  }
-
-  if (text.includes("sensor") || text.includes("temperature") || text.includes("temp") || text.includes("current")) {
-    return `Sensor readings:
-IR1: ${latest.ir1}°C
-IR2: ${latest.ir2}°C
-Max temperature: ${latest.maxTemp}°C
-Current: ${latest.current}A.`;
-  }
-
-  if (
-    text.includes("relay") ||
-    text.includes("buzzer") ||
-    text.includes("light") ||
-    text.includes("sms") ||
-    text.includes("output") ||
-    text.includes("trip") ||
-    text.includes("shutdown")
-  ) {
-    return `Output states:
-Light: ${outputLabel(latest.light, latest.state, latest.status, "light")}
-Buzzer: ${outputLabel(latest.buzzer, latest.state, latest.status, "buzzer")}
-Relay: ${relayLabel(latest.relay, latest.state, latest.status)}
-Relay detail: ${relayDetail(latest.relay, latest.state, latest.status)}
-SMS: ${latest.smsSent ? "SENT" : "READY"}.
-
-Important: the dashboard treats Reactive/Class 3 as the actual trip condition, not raw relay = 0 alone.`;
-  }
-
-  if (text.includes("risk") || text.includes("safe") || text.includes("danger") || text.includes("stable")) {
-    return `Risk: ${latest.risk}%
-State: ${stateMeta.label}
-Interpretation: ${latest.state === 0 ? "System is currently stable." : "System is in a warning or protective state."}`;
-  }
-
-  if (text.includes("cloud") || text.includes("wifi") || text.includes("connection")) {
-    return `Connection status:
-WiFi: ${latest.wifiStatus}
-Cloud: ${latest.cloudStatus}
-Device ID: ${latest.deviceId}
-Last update: ${latest.displayTimestamp}.`;
-  }
-
-  if (text.includes("event") || text.includes("recent") || text.includes("last")) {
-    if (!recentEvent) return "No recent events available.";
-    return `Latest event: ${recentEvent.title}
-Time: ${recentEvent.time}
-Detail: ${recentEvent.detail}`;
-  }
-
-  return "Try asking about sensor readings, current status, output states, relay, SMS, risk, saved history, highest temperature, WiFi/cloud connection, or recent events.";
-}
-
-function buildDatabaseAwareReply(input, context, databaseContext) {
-  const text = input.toLowerCase().trim();
-  const { latest, stateMeta, events } = context;
-  const summary = databaseContext?.summary;
-  const dbLatest = summary?.latest_reading;
-  const recentEvent = events?.[0];
-
-  if (!text) {
-    return "I can help with status, risk, sensor readings, output states, cloud link, saved database logs, and recent events.";
-  }
-
-  if (!databaseContext?.success || !summary) {
-    return `${buildLocalAssistantReply(input, context)}
-
-Note: I could not fetch saved Supabase context, so this answer is based on the latest live dashboard reading only.`;
-  }
-
-  const latestState = safeNumber(dbLatest?.class ?? latest.state, 0);
-  const latestStatus = dbLatest?.status ?? latest.status ?? stateMeta.label;
-  const latestRelay = dbLatest?.relay ?? latest.relay;
-  const latestLight = dbLatest?.light ?? latest.light;
-  const latestBuzzer = dbLatest?.buzzer ?? latest.buzzer;
-
-  const relayState = relayLabel(latestRelay, latestState, latestStatus);
-  const relayExplanation = relayDetail(latestRelay, latestState, latestStatus);
-
-  const reactiveRecords = safeNumber(summary?.class_counts?.reactive, 0);
-  const preventiveRecords = safeNumber(summary?.class_counts?.preventive, 0);
-  const predictiveRecords = safeNumber(summary?.class_counts?.predictive, 0);
-  const normalRecords = safeNumber(summary?.class_counts?.normal, 0);
-
-  if (
-    text.includes("highest") ||
-    text.includes("maximum") ||
-    text.includes("max temp") ||
-    text.includes("hottest")
-  ) {
-    const temp = summary.highest_temperature;
-    const current = summary.highest_current;
-
-    return `Based on the saved Supabase records analyzed: ${summary.total_records_analyzed}
-
-Highest temperature:
-- Max temperature: ${temp.value}°C
-- IR1: ${temp.ir1}°C
-- IR2: ${temp.ir2}°C
-- Current at that time: ${temp.current}A
-- Status: ${temp.status}
-- Time: ${temp.timestamp}
-
-Highest current:
-- Current: ${current.value}A
-- Max temperature at that time: ${current.max_temp}°C
-- Status: ${current.status}
-- Time: ${current.timestamp}`;
-  }
-
-  if (
-    text.includes("summary") ||
-    text.includes("database") ||
-    text.includes("saved") ||
-    text.includes("history") ||
-    text.includes("records")
-  ) {
-    return `Database summary from Supabase:
-- Records analyzed: ${summary.total_records_analyzed}
-- Time range: ${summary.time_range.from} to ${summary.time_range.to}
-- Normal: ${normalRecords}
-- Predictive: ${predictiveRecords}
-- Preventive: ${preventiveRecords}
-- Reactive: ${reactiveRecords}
-- Highest temperature: ${summary.highest_temperature.value}°C
-- Highest current: ${summary.highest_current.value}A
-
-Relay interpretation:
-- Relay display: ${relayState}
-- ${relayExplanation}
-- Reactive/Class 3 is treated as the true shutdown/trip condition.`;
-  }
-
-  if (text.includes("status") || text.includes("current state") || text === "state") {
-    return `Current state: ${latestStatus}
-Class: ${latestState}
-IR1: ${dbLatest?.ir1 ?? latest.ir1}°C
-IR2: ${dbLatest?.ir2 ?? latest.ir2}°C
-Max temperature: ${dbLatest?.max_temp ?? latest.maxTemp}°C
-Current: ${dbLatest?.current ?? latest.current}A
-Risk: ${latest.risk}%
-Action: ${getActionLabel(latestState)}.`;
-  }
-
-  if (text.includes("sensor") || text.includes("temperature") || text.includes("temp") || text.includes("current")) {
-    return `Latest sensor readings from the database-aware context:
-- IR1: ${dbLatest?.ir1 ?? latest.ir1}°C
-- IR2: ${dbLatest?.ir2 ?? latest.ir2}°C
-- Max temperature: ${dbLatest?.max_temp ?? latest.maxTemp}°C
-- Current: ${dbLatest?.current ?? latest.current}A
-- Timestamp: ${dbLatest?.timestamp ?? latest.displayTimestamp}`;
-  }
-
-  if (
-    text.includes("relay") ||
-    text.includes("trip") ||
-    text.includes("shutdown") ||
-    text.includes("buzzer") ||
-    text.includes("light") ||
-    text.includes("sms") ||
-    text.includes("output")
-  ) {
-    return `Output states:
-- Light: ${outputLabel(latestLight, latestState, latestStatus, "light")}
-- Buzzer: ${outputLabel(latestBuzzer, latestState, latestStatus, "buzzer")}
-- Relay: ${relayState}
-- SMS: ${(dbLatest?.sms_sent ?? latest.smsSent) ? "SENT" : "READY"}
-
-Relay interpretation:
-- ${relayExplanation}
-- Raw relay value: ${safeNumber(latestRelay, 0)}
-- The dashboard treats Reactive/Class 3 as the true trip condition.
-
-Database counts:
-- Reactive records: ${reactiveRecords}
-- Relay trip records: ${reactiveRecords}`;
-  }
-
-  if (text.includes("risk") || text.includes("safe") || text.includes("danger") || text.includes("stable")) {
-    const isStable = latestState === 0 && reactiveRecords === 0 && preventiveRecords === 0;
-
-    return `Safety interpretation:
-- Current state: ${latestStatus}
-- Current risk: ${latest.risk}%
-- Database records analyzed: ${summary.total_records_analyzed}
-- Normal records: ${normalRecords}
-- Predictive records: ${predictiveRecords}
-- Preventive records: ${preventiveRecords}
-- Reactive records: ${reactiveRecords}
-
-System assessment: ${isStable ? "Stable under the analyzed records." : "There were warning or shutdown-level records in the analyzed data."}`;
-  }
-
-  if (text.includes("cloud") || text.includes("wifi") || text.includes("connection")) {
-    return `Connection status:
-WiFi: ${latest.wifiStatus}
-Cloud: ${latest.cloudStatus}
-Device ID: ${latest.deviceId}
-Last dashboard update: ${latest.displayTimestamp}
-Database source: ${databaseContext.source ?? summary.source}`;
-  }
-
-  if (text.includes("event") || text.includes("recent") || text.includes("last")) {
-    if (!recentEvent) return "No recent live events available yet.";
-
-    return `Latest live event: ${recentEvent.title}
-Time: ${recentEvent.time}
-Detail: ${recentEvent.detail}
-
-Database range analyzed:
-${summary.time_range.from} to ${summary.time_range.to}`;
-  }
-
-  return `I checked the live dashboard and saved Supabase telemetry.
-
-Current state: ${latestStatus}
-Max temperature: ${dbLatest?.max_temp ?? latest.maxTemp}°C
-Current: ${dbLatest?.current ?? latest.current}A
-Relay: ${relayState}
-Records analyzed: ${summary.total_records_analyzed}
-
-Try asking about highest temperature, saved history, relay trip, sensor readings, current status, output states, risk, or cloud connection.`;
 }
 
 function AssistantPanel({
@@ -822,7 +590,7 @@ function AssistantPanel({
                     EMBERMIND AI
                   </div>
                   <div className="mt-1 text-xs text-white/45">
-                    Database-aware dashboard assistant
+                    Backend AI · Supabase-grounded assistant
                   </div>
                 </div>
                 <button
@@ -878,7 +646,7 @@ function AssistantPanel({
                     value={input}
                     onChange={(e) => setInput(e.target.value)}
                     rows={1}
-                    placeholder="Ask about status, sensors, outputs, relay, SMS, saved logs..."
+                    placeholder="Ask about relay, status, sensors, outputs, risk, or saved logs..."
                     className="max-h-28 min-h-[46px] flex-1 resize-none rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-white outline-none placeholder:text-white/35"
                   />
                   <button
@@ -920,7 +688,7 @@ export default function EMBERMINDLiveDashboard() {
     {
       id: "welcome",
       role: "assistant",
-      text: "EMBERMIND AI online. I can use live dashboard data and saved Supabase telemetry. Ask about relay trips, highest temperature, status, sensors, risk, saved logs, or cloud connection.",
+      text: "EMBERMIND AI online. I now send questions to the backend AI endpoint, which checks Supabase telemetry and applies NeuroBreak classification rules.",
     },
   ]);
 
@@ -1152,6 +920,7 @@ export default function EMBERMINDLiveDashboard() {
 
   const quickPrompts = [
     "Explain current state",
+    "Did the relay trip?",
     "Show sensor readings",
     "Show output states",
     "Highest temperature",
@@ -1178,16 +947,14 @@ export default function EMBERMINDLiveDashboard() {
       {
         id: loadingMessageId,
         role: "assistant",
-        text: "Checking live telemetry and saved Supabase records...",
+        text: "Checking Supabase telemetry and Embermind backend AI...",
       },
     ]);
 
     setAssistantInput("");
     setAssistantOpen(true);
 
-    const context = { latest, stateMeta, relayStatus, events };
-    const databaseContext = await fetchEmbermindDatabaseContext();
-    const reply = buildDatabaseAwareReply(text, context, databaseContext);
+    const reply = await askEmbermindAI(text);
 
     setAssistantMessages((prev) =>
       prev.map((message) =>
@@ -1453,7 +1220,7 @@ export default function EMBERMINDLiveDashboard() {
             icon={Power}
             label="Relay"
             value={hasData ? relayStatus : "--"}
-            subvalue={hasData ? relayDetail(latest.relay, latest.state, latest.status) : "Active-low Relay"}
+            subvalue={hasData ? relayDetail(latest.relay, latest.state, latest.status) : "Relay State"}
           />
           <StatCard
             icon={Send}
