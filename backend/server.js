@@ -1,8 +1,10 @@
-// v2 - Embermind AI backend with Supabase grounding + free Gemini API fallback
+// v3 - Embermind AI backend with Supabase grounding + free Gemini API fallback + WebSocket realtime broadcast
 require("dotenv").config();
 
 const express = require("express");
 const cors = require("cors");
+const http = require("http");
+const WebSocket = require("ws");
 const { createClient } = require("@supabase/supabase-js");
 
 const app = express();
@@ -10,6 +12,17 @@ const PORT = process.env.PORT || 3001;
 
 app.use(cors());
 app.use(express.json({ limit: "1mb" }));
+
+// ===============================
+// HTTP + WEBSOCKET SERVER SETUP
+// ===============================
+
+const server = http.createServer(app);
+
+const wss = new WebSocket.Server({
+  server,
+  path: "/ws",
+});
 
 // ===============================
 // SUPABASE SETUP
@@ -35,6 +48,111 @@ if (!supabase) {
 let hasReceivedTelemetry = false;
 let latestTelemetry = null;
 let telemetryHistory = [];
+
+// ===============================
+// WEBSOCKET HELPERS
+// ===============================
+
+function sendWebSocketMessage(ws, payload) {
+  if (ws.readyState !== WebSocket.OPEN) return;
+
+  ws.send(JSON.stringify(payload));
+}
+
+function broadcastWebSocketMessage(payload) {
+  const message = JSON.stringify(payload);
+
+  wss.clients.forEach((client) => {
+    if (client.readyState === WebSocket.OPEN) {
+      client.send(message);
+    }
+  });
+}
+
+function broadcastTelemetry(telemetry) {
+  broadcastWebSocketMessage({
+    type: "telemetry",
+    payload: telemetry,
+    timestamp: new Date().toISOString(),
+  });
+}
+
+function broadcastReset() {
+  broadcastWebSocketMessage({
+    type: "reset",
+    payload: {
+      has_data: false,
+      device_id: null,
+      message: "Local telemetry was reset",
+    },
+    timestamp: new Date().toISOString(),
+  });
+}
+
+wss.on("connection", (ws, req) => {
+  ws.isAlive = true;
+
+  const clientIp =
+    req.headers["x-forwarded-for"] ||
+    req.socket?.remoteAddress ||
+    "unknown";
+
+  console.log(`WebSocket client connected: ${clientIp}`);
+
+  sendWebSocketMessage(ws, {
+    type: "connection",
+    message: "Connected to NeuroBreak realtime WebSocket",
+    has_data: hasReceivedTelemetry,
+    latest: latestTelemetry,
+    timestamp: new Date().toISOString(),
+  });
+
+  if (hasReceivedTelemetry && latestTelemetry) {
+    sendWebSocketMessage(ws, {
+      type: "telemetry",
+      payload: latestTelemetry,
+      timestamp: new Date().toISOString(),
+    });
+  }
+
+  ws.on("pong", () => {
+    ws.isAlive = true;
+  });
+
+  ws.on("message", (message) => {
+    const text = message.toString();
+
+    if (text === "ping") {
+      sendWebSocketMessage(ws, {
+        type: "pong",
+        timestamp: new Date().toISOString(),
+      });
+    }
+  });
+
+  ws.on("close", () => {
+    console.log(`WebSocket client disconnected: ${clientIp}`);
+  });
+
+  ws.on("error", (error) => {
+    console.error("WebSocket client error:", error.message);
+  });
+});
+
+const heartbeatInterval = setInterval(() => {
+  wss.clients.forEach((ws) => {
+    if (ws.isAlive === false) {
+      return ws.terminate();
+    }
+
+    ws.isAlive = false;
+    ws.ping();
+  });
+}, 30000);
+
+wss.on("close", () => {
+  clearInterval(heartbeatInterval);
+});
 
 // ===============================
 // HELPER FUNCTIONS
@@ -583,6 +701,8 @@ app.get("/", (req, res) => {
     latest: latestTelemetry,
     supabase_configured: Boolean(supabase),
     gemini_configured: Boolean(process.env.GEMINI_API_KEY),
+    websocket_enabled: true,
+    websocket_path: "/ws",
   });
 });
 
@@ -593,6 +713,9 @@ app.get("/api/health", (req, res) => {
     has_data: hasReceivedTelemetry,
     supabase_configured: Boolean(supabase),
     gemini_configured: Boolean(process.env.GEMINI_API_KEY),
+    websocket_enabled: true,
+    websocket_path: "/ws",
+    websocket_clients: wss.clients.size,
     timestamp: new Date().toISOString(),
   });
 });
@@ -608,6 +731,10 @@ app.post("/api/telemetry", async (req, res) => {
     telemetryHistory.unshift(latestTelemetry);
     telemetryHistory = telemetryHistory.slice(0, 200);
 
+    // WebSocket broadcast happens immediately so the dashboard updates fast.
+    // Supabase saving happens after this and should not delay live dashboard display.
+    broadcastTelemetry(latestTelemetry);
+
     const supabaseResult = await saveTelemetryToSupabase(latestTelemetry, data);
 
     console.log("Received telemetry:", latestTelemetry);
@@ -618,6 +745,8 @@ app.post("/api/telemetry", async (req, res) => {
       saved_to_supabase: supabaseResult.saved,
       supabase_error: supabaseResult.error,
       latest: latestTelemetry,
+      websocket_broadcasted: true,
+      websocket_clients: wss.clients.size,
     });
   } catch (error) {
     console.error("Telemetry route error:", error.message);
@@ -856,9 +985,12 @@ app.post("/api/reset", (req, res) => {
   latestTelemetry = null;
   telemetryHistory = [];
 
+  broadcastReset();
+
   res.json({
     success: true,
     message: "Local telemetry reset. Supabase saved data was not deleted.",
+    websocket_broadcasted: true,
   });
 });
 
@@ -866,8 +998,9 @@ app.post("/api/reset", (req, res) => {
 // START SERVER
 // ===============================
 
-app.listen(PORT, () => {
+server.listen(PORT, () => {
   console.log(`NeuroBreak EMBERMIND API running on port ${PORT}`);
+  console.log(`WebSocket realtime endpoint enabled at /ws`);
 
   if (supabase) {
     console.log("Supabase storage: ENABLED");
