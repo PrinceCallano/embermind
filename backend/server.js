@@ -205,11 +205,7 @@ function buildTelemetrySummary(data, source = "unknown") {
   const preventiveRecords = data.filter((row) => safeNumber(row.class, 0) === 2);
   const reactiveRecords = data.filter((row) => safeNumber(row.class, 0) === 3);
 
-  // Important:
-  // Do NOT treat raw relay = 0 alone as a trip.
-  // The actual shutdown/trip condition is Reactive/Class 3.
   const relayTripRecords = reactiveRecords;
-
   const buzzerActiveRecords = data.filter((row) => safeNumber(row.buzzer, 0) === 1);
   const lightActiveRecords = data.filter((row) => safeNumber(row.light, 0) === 1);
 
@@ -509,11 +505,7 @@ function buildLocalFallbackAnswer(message, telemetry, source) {
   const summary = telemetry.summary;
   const latest = summary.latest_reading;
 
-  if (
-    lower.includes("relay") ||
-    lower.includes("trip") ||
-    lower.includes("shutdown")
-  ) {
+  if (lower.includes("relay") || lower.includes("trip") || lower.includes("shutdown")) {
     return `Based on the analyzed ${source} telemetry, the relay should be interpreted using the system class, not raw relay value alone.
 
 Latest state:
@@ -577,7 +569,8 @@ Latest reading:
 - Current: ${latest.current} A`;
   }
 
-return `Based on the analyzed ${source} telemetry, the direct answer is: the latest recorded system state is ${latest.status} / Class ${latest.class}.`;
+  return `Based on the analyzed ${source} telemetry, the direct answer is: the latest recorded system state is ${latest.status} / Class ${latest.class}.`;
+}
 
 // ===============================
 // ROUTES
@@ -653,7 +646,6 @@ app.get("/api/latest", (req, res) => {
 // Local temporary history or Supabase permanent history
 app.get("/api/history", async (req, res) => {
   const limit = Math.min(safeNumber(req.query.limit, 200), 1000);
-
   const result = await fetchTelemetryRows(limit);
 
   res.json({
