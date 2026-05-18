@@ -347,7 +347,7 @@ function SystemLinkPanel({ latest, currentState, connectionError, summary }) {
                 WiFi / Transport
               </div>
               <div className="mt-3 text-xl font-black capitalize">{latest.wifiStatus}</div>
-              <div className="mt-1 text-sm text-white/45">ESP32 telemetry link</div>
+              <div className="mt-1 text-sm text-white/45">ESP32 Telemetry Link</div>
             </div>
 
             <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
@@ -358,7 +358,7 @@ function SystemLinkPanel({ latest, currentState, connectionError, summary }) {
               <div className="mt-3 text-lg font-black leading-tight">
                 {getActionLabel(currentState)}
               </div>
-              <div className="mt-1 text-sm text-white/45">Threshold logic active</div>
+              <div className="mt-1 text-sm text-white/45">Threshold Logic Active</div>
             </div>
           </div>
         </div>
@@ -366,7 +366,7 @@ function SystemLinkPanel({ latest, currentState, connectionError, summary }) {
         <div className="rounded-3xl border border-white/10 bg-black/30 p-4">
           <div className="mb-3 flex items-center gap-2 text-sm text-white/55">
             <Gauge className="h-4 w-4" />
-            State distribution
+            State Distribution
           </div>
 
           <div className="grid grid-cols-2 gap-2 text-center">
@@ -528,7 +528,7 @@ function AssistantPanel({ isOpen, setIsOpen, messages, input, setInput, onSend, 
         }`}
       >
         <MessageCircle className="h-4 w-4" />
-        <span className="hidden sm:inline">ALISTOVOLT AI</span>
+        <span className="hidden sm:inline">EMBERMIND AI</span>
       </button>
 
       {isOpen && (
@@ -542,7 +542,7 @@ function AssistantPanel({ isOpen, setIsOpen, messages, input, setInput, onSend, 
                 <div className="min-w-0">
                   <div className="flex items-center gap-2 text-sm font-semibold text-white">
                     <Bot className="h-4 w-4" />
-                    ALISTOVOLT AI
+                    EMBERMIND AI
                   </div>
                   <div className="mt-1 text-xs text-white/45">Local dashboard assistant</div>
                 </div>
@@ -599,7 +599,7 @@ function AssistantPanel({ isOpen, setIsOpen, messages, input, setInput, onSend, 
   );
 }
 
-export default function ALISTOVOLTLiveDashboard() {
+export default function EMBERMINDLiveDashboard() {
   const isMobile = useIsMobile();
   const [now, setNow] = useState(new Date());
   const [tick, setTick] = useState(0);
@@ -611,7 +611,7 @@ export default function ALISTOVOLTLiveDashboard() {
     {
       id: "welcome",
       role: "assistant",
-      text: "ALISTOVOLT AI online. Ask about sensor readings, output states, status, risk, or cloud connection.",
+      text: "EMBERMIND AI online. Ask about sensor readings, output states, status, risk, or cloud connection.",
     },
   ]);
 
@@ -812,10 +812,10 @@ export default function ALISTOVOLTLiveDashboard() {
             <div className="min-w-0">
               <div className="mb-3 inline-flex max-w-full items-center gap-2 rounded-full border border-white/10 bg-white/5 px-3 py-1 text-[10px] sm:text-[11px] uppercase tracking-[0.2em] sm:tracking-[0.28em] text-white/60">
                 <Radio className="h-3.5 w-3.5 shrink-0" />
-                <span className="truncate">ALISTOVOLT Live Monitoring Console</span>
+                <span className="truncate">EMBERMIND Live Monitoring Console</span>
               </div>
               <h1 className="max-w-[8ch] text-[2.4rem] font-black uppercase leading-[0.88] tracking-[-0.05em] text-white sm:text-4xl lg:text-5xl xl:text-[3.8rem] 2xl:text-[4.4rem]">
-                ALISTOVOLT Dashboard
+                EMBERMIND Dashboard
               </h1>
               <p className="mt-3 sm:mt-4 text-sm sm:text-base leading-6 text-white/65">
                 IR1 · IR2 · Current · Outputs · Cloud Telemetry
@@ -842,10 +842,10 @@ export default function ALISTOVOLTLiveDashboard() {
           </div>
 
           <div className="mt-6 grid gap-4 grid-cols-1 sm:grid-cols-2 xl:grid-cols-4">
-            <StatCard icon={Thermometer} label="IR1 Temp" value={hasData ? `${latest.ir1}°C` : "--"} subvalue={hasData ? "MLX90614 sensor 1" : "Waiting for ESP32"} />
-            <StatCard icon={Thermometer} label="IR2 Temp" value={hasData ? `${latest.ir2}°C` : "--"} subvalue={hasData ? "MLX90614 sensor 2" : "Waiting for ESP32"} />
-            <StatCard icon={Flame} label="Max Temp" value={hasData ? `${latest.maxTemp}°C` : "--"} subvalue={hasData ? "Highest hotspot value" : "Waiting for ESP32"} />
-            <StatCard icon={Zap} label="Current" value={hasData ? `${latest.current}A` : "--"} subvalue={hasData ? "SCT-013 current sensor" : "Waiting for ESP32"} />
+            <StatCard icon={Thermometer} label="IR1 Temp" value={hasData ? `${latest.ir1}°C` : "--"} subvalue={hasData ? "MLX90614 Sensor 1" : "Waiting for ESP32"} />
+            <StatCard icon={Thermometer} label="IR2 Temp" value={hasData ? `${latest.ir2}°C` : "--"} subvalue={hasData ? "MLX90614 Sensor 2" : "Waiting for ESP32"} />
+            <StatCard icon={Flame} label="Max Temp" value={hasData ? `${latest.maxTemp}°C` : "--"} subvalue={hasData ? "Highest Hotspot Value" : "Waiting for ESP32"} />
+            <StatCard icon={Zap} label="Current" value={hasData ? `${latest.current}A` : "--"} subvalue={hasData ? "SCT-013 Current Sensor" : "Waiting for ESP32"} />
           </div>
         </motion.div>
 
@@ -872,10 +872,10 @@ export default function ALISTOVOLTLiveDashboard() {
             </div>
 
             <div className="mb-4 flex flex-wrap gap-2">
-              <ChartLegendItem color={COLORS.ir1} label="IR1" unit="temperature" />
-              <ChartLegendItem color={COLORS.ir2} label="IR2" unit="temperature" />
-              <ChartLegendItem color={COLORS.maxTemp} label="Max Temp" unit="highest °C" />
-              <ChartLegendItem color={COLORS.current} label="Current" unit="amperes" />
+              <ChartLegendItem color={COLORS.ir1} label="IR1" unit="Temperature" />
+              <ChartLegendItem color={COLORS.ir2} label="IR2" unit="Temperature" />
+              <ChartLegendItem color={COLORS.maxTemp} label="Max Temp" unit="Highest °C" />
+              <ChartLegendItem color={COLORS.current} label="Current" unit="Amperes" />
             </div>
 
             <div className="h-[300px] sm:h-[350px] w-full rounded-[24px] sm:rounded-[28px] border border-white/10 bg-black/25 p-3">
@@ -938,7 +938,7 @@ export default function ALISTOVOLTLiveDashboard() {
             </div>
 
             <div className="mb-4 flex flex-wrap gap-2">
-              <ChartLegendItem color={COLORS.risk} label="Risk" unit="computed %" />
+              <ChartLegendItem color={COLORS.risk} label="Risk" unit="Computed %" />
             </div>
 
             <div className="h-[300px] sm:h-[350px] w-full rounded-[24px] sm:rounded-[28px] border border-white/10 bg-black/25 p-3">
@@ -965,10 +965,10 @@ export default function ALISTOVOLTLiveDashboard() {
         </div>
 
         <div className="mt-4 sm:mt-6 grid gap-4 sm:gap-6 xl:grid-cols-4">
-          <StatCard icon={AlertTriangle} label="Light" value={hasData ? outputLabel(latest.light) : "--"} subvalue="Warning light · GPIO 14" />
-          <StatCard icon={Radio} label="Buzzer" value={hasData ? outputLabel(latest.buzzer) : "--"} subvalue="Audible alert · GPIO 26" />
-          <StatCard icon={Power} label="Relay" value={hasData ? relayStatus : "--"} subvalue="Active-low relay · GPIO 23" />
-          <StatCard icon={Send} label="SMS" value={hasData ? (latest.smsSent ? "SENT" : "READY") : "--"} subvalue="SIM800L alert state" />
+          <StatCard icon={AlertTriangle} label="Light" value={hasData ? outputLabel(latest.light) : "--"} subvalue="Warning Light" />
+          <StatCard icon={Radio} label="Buzzer" value={hasData ? outputLabel(latest.buzzer) : "--"} subvalue="Audible Alert" />
+          <StatCard icon={Power} label="Relay" value={hasData ? relayStatus : "--"} subvalue="Active-low Relay" />
+          <StatCard icon={Send} label="SMS" value={hasData ? (latest.smsSent ? "SENT" : "READY") : "--"} subvalue="SIM800L Alert State" />
         </div>
 
         <div className="mt-4 sm:mt-6 grid gap-4 sm:gap-6 xl:grid-cols-[minmax(280px,0.8fr)_minmax(0,1.2fr)]">
