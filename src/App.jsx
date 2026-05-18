@@ -842,8 +842,8 @@ export default function EMBERMINDLiveDashboard() {
           </div>
 
           <div className="mt-6 grid gap-4 grid-cols-1 sm:grid-cols-2 xl:grid-cols-4">
-            <StatCard icon={Thermometer} label="IR1 Temp" value={hasData ? `${latest.ir1}°C` : "--"} subvalue={hasData ? "MLX90614 Sensor 1" : "Waiting for ESP32"} />
-            <StatCard icon={Thermometer} label="IR2 Temp" value={hasData ? `${latest.ir2}°C` : "--"} subvalue={hasData ? "MLX90614 Sensor 2" : "Waiting for ESP32"} />
+            <StatCard icon={Thermometer} label="Terminal Temperature Sensor" value={hasData ? `${latest.ir1}°C` : "--"} subvalue={hasData ? "MLX90614 Sensor 1" : "Waiting for ESP32"} />
+            <StatCard icon={Thermometer} label="Body Temperature Sensor" value={hasData ? `${latest.ir2}°C` : "--"} subvalue={hasData ? "MLX90614 Sensor 2" : "Waiting for ESP32"} />
             <StatCard icon={Flame} label="Max Temp" value={hasData ? `${latest.maxTemp}°C` : "--"} subvalue={hasData ? "Highest Hotspot Value" : "Waiting for ESP32"} />
             <StatCard icon={Zap} label="Current" value={hasData ? `${latest.current}A` : "--"} subvalue={hasData ? "SCT-013 Current Sensor" : "Waiting for ESP32"} />
           </div>
