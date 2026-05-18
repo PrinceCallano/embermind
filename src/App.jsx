@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { motion } from "framer-motion";
 import {
   Activity,
@@ -47,9 +47,7 @@ const MAX_HISTORY_POINTS = 60;
 
 // WebSocket is the main realtime channel.
 // Polling is kept as backup only.
-// The graph is also re-sampled every 1 second so the X-axis stays at 1-second intervals.
-const CHART_SAMPLE_MS = 1000;
-const LIVE_REFRESH_MS = 1000;
+const LIVE_REFRESH_MS = 5000;
 const LIVE_FETCH_TIMEOUT_MS = 1500;
 const WEBSOCKET_RECONNECT_MS = 1500;
 
@@ -270,17 +268,6 @@ function normalizeWebSocketPayload(message) {
   }
 
   return null;
-}
-
-function withOneSecondChartTime(point, date = new Date()) {
-  const chartSecond = Math.floor(date.getTime() / 1000);
-
-  return {
-    ...point,
-    t: formatClock(date),
-    chartTimestamp: date.toISOString(),
-    chartSecond,
-  };
 }
 
 function createDemoPoint(previous) {
@@ -736,8 +723,6 @@ export default function EMBERMINDLiveDashboard() {
   const [now, setNow] = useState(new Date());
   const [tick, setTick] = useState(0);
   const [history, setHistory] = useState(() => (USE_DEMO_DATA ? seedDemoHistory() : []));
-  const latestTelemetryRef = useRef(null);
-  const lastChartSecondRef = useRef(null);
 
   const [events, setEvents] = useState([]);
   const [actionStreamMode, setActionStreamMode] = useState("live");
@@ -762,25 +747,29 @@ export default function EMBERMINDLiveDashboard() {
 
   const appendTelemetryPoint = useCallback((point) => {
     if (!point.hasData) {
-      latestTelemetryRef.current = null;
-      lastChartSecondRef.current = null;
       setHistory([]);
       return;
     }
 
-    latestTelemetryRef.current = point;
-
-    const chartPoint = withOneSecondChartTime(point);
-    lastChartSecondRef.current = chartPoint.chartSecond;
-
     setHistory((prev) => {
       const previousPoint = prev[prev.length - 1];
 
-      if (previousPoint?.chartSecond === chartPoint.chartSecond) {
-        return [...prev.slice(0, -1), chartPoint];
+      if (
+        previousPoint &&
+        previousPoint.timestamp === point.timestamp &&
+        previousPoint.ir1 === point.ir1 &&
+        previousPoint.ir2 === point.ir2 &&
+        previousPoint.maxTemp === point.maxTemp &&
+        previousPoint.current === point.current &&
+        previousPoint.state === point.state &&
+        previousPoint.light === point.light &&
+        previousPoint.buzzer === point.buzzer &&
+        previousPoint.relay === point.relay
+      ) {
+        return [...prev.slice(0, -1), point];
       }
 
-      return [...prev.slice(-(MAX_HISTORY_POINTS - 1)), chartPoint];
+      return [...prev.slice(-(MAX_HISTORY_POINTS - 1)), point];
     });
   }, []);
 
@@ -970,29 +959,6 @@ export default function EMBERMINDLiveDashboard() {
       }
     };
   }, [appendTelemetryPoint, fetchLiveTelemetryBackup]);
-
-  useEffect(() => {
-    if (USE_DEMO_DATA) return undefined;
-
-    const chartSampler = setInterval(() => {
-      const latestTelemetry = latestTelemetryRef.current;
-
-      if (!latestTelemetry?.hasData) return;
-
-      const sampleTime = new Date();
-      const currentSecond = Math.floor(sampleTime.getTime() / 1000);
-
-      if (lastChartSecondRef.current === currentSecond) return;
-
-      const chartPoint = withOneSecondChartTime(latestTelemetry, sampleTime);
-      lastChartSecondRef.current = currentSecond;
-
-      setHistory((prev) => [...prev.slice(-(MAX_HISTORY_POINTS - 1)), chartPoint]);
-      setTick((value) => value + 1);
-    }, CHART_SAMPLE_MS);
-
-    return () => clearInterval(chartSampler);
-  }, []);
 
   const fetchSavedActionLogs = useCallback(async () => {
     try {
