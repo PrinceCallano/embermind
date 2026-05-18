@@ -1,3 +1,4 @@
+//v1
 require("dotenv").config();
 
 const express = require("express");
@@ -232,6 +233,209 @@ app.get("/api/history", async (req, res) => {
     source: "local_cache",
     history: telemetryHistory,
   });
+});
+
+// Embermind AI context based on stored Supabase telemetry
+app.get("/api/ai-context", async (req, res) => {
+  try {
+    const limit = Math.min(safeNumber(req.query.limit, 300), 2000);
+
+    let data = [];
+    let source = "local_cache";
+
+    if (supabase) {
+      const result = await supabase
+        .from("neurobreak_telemetry")
+        .select("*")
+        .order("created_at", { ascending: false })
+        .limit(limit);
+
+      if (result.error) {
+        console.error("Supabase AI context fetch error:", result.error.message);
+
+        data = telemetryHistory;
+        source = "local_cache_fallback";
+      } else {
+        data = result.data || [];
+        source = "supabase";
+      }
+    } else {
+      data = telemetryHistory;
+      source = "local_cache";
+    }
+
+    if (!data || data.length === 0) {
+      return res.json({
+        success: true,
+        source,
+        has_data: false,
+        context: "No stored telemetry data is available yet. Embermind AI is waiting for ESP32 sensor data.",
+        latest: null,
+        summary: null,
+      });
+    }
+
+    const latest = data[0];
+
+    const maxTempRow = data.reduce((max, row) => {
+      return safeNumber(row.max_temp, 0) > safeNumber(max.max_temp, 0) ? row : max;
+    }, data[0]);
+
+    const maxCurrentRow = data.reduce((max, row) => {
+      return safeNumber(row.current, 0) > safeNumber(max.current, 0) ? row : max;
+    }, data[0]);
+
+    const normalCount = data.filter(row => safeNumber(row.class, 0) === 0).length;
+    const predictiveCount = data.filter(row => safeNumber(row.class, 0) === 1).length;
+    const preventiveCount = data.filter(row => safeNumber(row.class, 0) === 2).length;
+    const reactiveCount = data.filter(row => safeNumber(row.class, 0) === 3).length;
+
+    const relayTripRecords = data.filter(row => {
+      return safeNumber(row.relay, 1) === 0 || safeNumber(row.class, 0) === 3;
+    });
+
+    const buzzerActiveRecords = data.filter(row => safeNumber(row.buzzer, 0) === 1);
+    const lightActiveRecords = data.filter(row => safeNumber(row.light, 0) === 1);
+
+    const firstRecord = data[data.length - 1];
+    const lastRecord = data[0];
+
+    const summary = {
+      total_records_analyzed: data.length,
+      source,
+
+      time_range: {
+        from: firstRecord.created_at || firstRecord.timestamp || null,
+        to: lastRecord.created_at || lastRecord.timestamp || null,
+      },
+
+      latest_reading: {
+        device_id: latest.device_id,
+        ir1: safeNumber(latest.ir1, 0),
+        ir2: safeNumber(latest.ir2, 0),
+        max_temp: safeNumber(latest.max_temp, 0),
+        current: safeNumber(latest.current, 0),
+        status: latest.status,
+        class: safeNumber(latest.class, 0),
+        light: safeNumber(latest.light, 0),
+        buzzer: safeNumber(latest.buzzer, 0),
+        relay: safeNumber(latest.relay, 1),
+        sms_sent: safeBoolean(latest.sms_sent, false),
+        timestamp: latest.created_at || latest.timestamp || null,
+      },
+
+      highest_temperature: {
+        value: safeNumber(maxTempRow.max_temp, 0),
+        ir1: safeNumber(maxTempRow.ir1, 0),
+        ir2: safeNumber(maxTempRow.ir2, 0),
+        current: safeNumber(maxTempRow.current, 0),
+        status: maxTempRow.status,
+        class: safeNumber(maxTempRow.class, 0),
+        timestamp: maxTempRow.created_at || maxTempRow.timestamp || null,
+      },
+
+      highest_current: {
+        value: safeNumber(maxCurrentRow.current, 0),
+        max_temp: safeNumber(maxCurrentRow.max_temp, 0),
+        status: maxCurrentRow.status,
+        class: safeNumber(maxCurrentRow.class, 0),
+        timestamp: maxCurrentRow.created_at || maxCurrentRow.timestamp || null,
+      },
+
+      class_counts: {
+        normal: normalCount,
+        predictive: predictiveCount,
+        preventive: preventiveCount,
+        reactive: reactiveCount,
+      },
+
+      output_counts: {
+        relay_trip_records: relayTripRecords.length,
+        buzzer_active_records: buzzerActiveRecords.length,
+        light_active_records: lightActiveRecords.length,
+      },
+    };
+
+    const context = `
+Embermind AI telemetry context:
+
+Data source: ${source}
+Total records analyzed: ${summary.total_records_analyzed}
+
+Time range:
+- From: ${summary.time_range.from}
+- To: ${summary.time_range.to}
+
+Latest reading:
+- Device ID: ${summary.latest_reading.device_id}
+- IR1: ${summary.latest_reading.ir1} °C
+- IR2: ${summary.latest_reading.ir2} °C
+- Max temperature: ${summary.latest_reading.max_temp} °C
+- Current: ${summary.latest_reading.current} A
+- Status: ${summary.latest_reading.status}
+- Class: ${summary.latest_reading.class}
+- Light: ${summary.latest_reading.light}
+- Buzzer: ${summary.latest_reading.buzzer}
+- Relay: ${summary.latest_reading.relay}
+- SMS sent: ${summary.latest_reading.sms_sent}
+- Timestamp: ${summary.latest_reading.timestamp}
+
+Highest temperature in analyzed records:
+- Max temperature: ${summary.highest_temperature.value} °C
+- IR1: ${summary.highest_temperature.ir1} °C
+- IR2: ${summary.highest_temperature.ir2} °C
+- Current at that time: ${summary.highest_temperature.current} A
+- Status: ${summary.highest_temperature.status}
+- Class: ${summary.highest_temperature.class}
+- Timestamp: ${summary.highest_temperature.timestamp}
+
+Highest current in analyzed records:
+- Current: ${summary.highest_current.value} A
+- Max temperature at that time: ${summary.highest_current.max_temp} °C
+- Status: ${summary.highest_current.status}
+- Class: ${summary.highest_current.class}
+- Timestamp: ${summary.highest_current.timestamp}
+
+Classification counts:
+- Normal records: ${summary.class_counts.normal}
+- Predictive records: ${summary.class_counts.predictive}
+- Preventive records: ${summary.class_counts.preventive}
+- Reactive records: ${summary.class_counts.reactive}
+
+Output activity:
+- Relay trip records: ${summary.output_counts.relay_trip_records}
+- Buzzer active records: ${summary.output_counts.buzzer_active_records}
+- Light active records: ${summary.output_counts.light_active_records}
+
+System interpretation rules:
+- Class 0 means Normal.
+- Class 1 means Predictive.
+- Class 2 means Preventive.
+- Class 3 means Reactive.
+- Predictive means early warning.
+- Preventive means warning plus local alert.
+- Reactive means dangerous condition requiring shutdown or relay action.
+- Relay value 0 usually means relay shutdown/trip if the hardware logic is active-low.
+- Relay value 1 usually means relay normal/energized if the hardware logic is active-low.
+`;
+
+    res.json({
+      success: true,
+      source,
+      has_data: true,
+      context,
+      latest: summary.latest_reading,
+      summary,
+    });
+  } catch (error) {
+    console.error("AI context route error:", error.message);
+
+    res.status(500).json({
+      success: false,
+      message: "Failed to generate Embermind AI context",
+      error: error.message,
+    });
+  }
 });
 
 // Action stream based on class/status changes
