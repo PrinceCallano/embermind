@@ -38,13 +38,15 @@ const API_BASE_URL = "https://neurobreak-api.onrender.com";
 const API_URL = `${API_BASE_URL}/api/latest`;
 const HISTORY_API_URL = `${API_BASE_URL}/api/history`;
 const EMBERMIND_AI_API_URL = `${API_BASE_URL}/api/embermind-ai`;
-const WEBSOCKET_URL =
-  API_BASE_URL.replace(/^https:/, "wss:").replace(/^http:/, "ws:") + "/ws";
+const WEBSOCKET_URL = API_BASE_URL.replace(/^https:/, "wss:").replace(/^http:/, "ws:") + "/ws";
 
-// 60 points = about 1 minute of history if data comes every 1 second
+// Increased from 36 to 60.
+// If your ESP32/RPi sends around 1 reading per second,
+// this gives you around 1 minute of graph history.
 const MAX_HISTORY_POINTS = 60;
 
-// WebSocket main realtime channel, polling is backup
+// WebSocket is the main realtime channel.
+// Polling is kept as backup only.
 const LIVE_REFRESH_MS = 5000;
 const LIVE_FETCH_TIMEOUT_MS = 1500;
 const WEBSOCKET_RECONNECT_MS = 1500;
@@ -847,11 +849,7 @@ export default function EMBERMINDLiveDashboard() {
         await fetchLiveTelemetryBackup();
       } catch (error) {
         if (!stopped) {
-          setConnectionError(
-            error.name === "AbortError"
-              ? "Backup polling timed out"
-              : error.message || "Connection failed"
-          );
+          setConnectionError(error.name === "AbortError" ? "Backup polling timed out" : error.message || "Connection failed");
           setTick((value) => value + 1);
         }
       } finally {
@@ -1276,9 +1274,9 @@ export default function EMBERMINDLiveDashboard() {
                   <XAxis
                     dataKey="t"
                     stroke="rgba(255,255,255,0.28)"
-                    tick={{ fill: "rgba(255,255,255,0.42)", fontSize: isMobile ? 9 : 11 }}
-                    minTickGap={isMobile ? 60 : 28}
-                    interval="preserveStartEnd"
+                    tick={{ fill: "rgba(255,255,255,0.42)", fontSize: isMobile ? 7 : 9 }}
+                    minTickGap={0}
+                    interval={0}
                     axisLine={{ stroke: "rgba(255,255,255,0.22)" }}
                     tickLine={{ stroke: "rgba(255,255,255,0.18)" }}
                   />
@@ -1296,63 +1294,13 @@ export default function EMBERMINDLiveDashboard() {
                     tick={{ fill: "rgba(255,255,255,0.42)", fontSize: isMobile ? 9 : 11 }}
                   />
                   <Tooltip content={<CustomTooltip />} />
-                  <ReferenceLine
-                    yAxisId="left"
-                    y={60}
-                    stroke="rgba(56,189,248,0.38)"
-                    strokeDasharray="6 6"
-                    ifOverflow="extendDomain"
-                  />
-                  <ReferenceLine
-                    yAxisId="left"
-                    y={75}
-                    stroke="rgba(251,191,36,0.38)"
-                    strokeDasharray="6 6"
-                    ifOverflow="extendDomain"
-                  />
-                  <ReferenceLine
-                    yAxisId="left"
-                    y={90}
-                    stroke="rgba(244,63,94,0.42)"
-                    strokeDasharray="6 6"
-                    ifOverflow="extendDomain"
-                  />
-                  <Line
-                    yAxisId="left"
-                    type="monotone"
-                    dataKey="ir1"
-                    name="IR1 temperature"
-                    stroke={COLORS.ir1}
-                    strokeWidth={isMobile ? 2.2 : 3}
-                    dot={false}
-                  />
-                  <Line
-                    yAxisId="left"
-                    type="monotone"
-                    dataKey="ir2"
-                    name="IR2 temperature"
-                    stroke={COLORS.ir2}
-                    strokeWidth={isMobile ? 2.2 : 3}
-                    dot={false}
-                  />
-                  <Line
-                    yAxisId="left"
-                    type="monotone"
-                    dataKey="maxTemp"
-                    name="Max temperature"
-                    stroke={COLORS.maxTemp}
-                    strokeWidth={isMobile ? 2.2 : 3}
-                    dot={false}
-                  />
-                  <Line
-                    yAxisId="right"
-                    type="monotone"
-                    dataKey="current"
-                    name="Load current"
-                    stroke={COLORS.current}
-                    strokeWidth={isMobile ? 2 : 2.4}
-                    dot={false}
-                  />
+                  <ReferenceLine yAxisId="left" y={60} stroke="rgba(56,189,248,0.38)" strokeDasharray="6 6" ifOverflow="extendDomain" />
+                  <ReferenceLine yAxisId="left" y={75} stroke="rgba(251,191,36,0.38)" strokeDasharray="6 6" ifOverflow="extendDomain" />
+                  <ReferenceLine yAxisId="left" y={90} stroke="rgba(244,63,94,0.42)" strokeDasharray="6 6" ifOverflow="extendDomain" />
+                  <Line yAxisId="left" type="monotone" dataKey="ir1" name="IR1 temperature" stroke={COLORS.ir1} strokeWidth={isMobile ? 2.2 : 3} dot={false} />
+                  <Line yAxisId="left" type="monotone" dataKey="ir2" name="IR2 temperature" stroke={COLORS.ir2} strokeWidth={isMobile ? 2.2 : 3} dot={false} />
+                  <Line yAxisId="left" type="monotone" dataKey="maxTemp" name="Max temperature" stroke={COLORS.maxTemp} strokeWidth={isMobile ? 2.2 : 3} dot={false} />
+                  <Line yAxisId="right" type="monotone" dataKey="current" name="Load current" stroke={COLORS.current} strokeWidth={isMobile ? 2 : 2.4} dot={false} />
                 </LineChart>
               </ResponsiveContainer>
             </div>
@@ -1396,9 +1344,9 @@ export default function EMBERMINDLiveDashboard() {
                   <XAxis
                     dataKey="t"
                     stroke="rgba(255,255,255,0.28)"
-                    tick={{ fill: "rgba(255,255,255,0.42)", fontSize: isMobile ? 9 : 11 }}
-                    minTickGap={isMobile ? 60 : 28}
-                    interval="preserveStartEnd"
+                    tick={{ fill: "rgba(255,255,255,0.42)", fontSize: isMobile ? 7 : 9 }}
+                    minTickGap={0}
+                    interval={0}
                     axisLine={{ stroke: "rgba(255,255,255,0.22)" }}
                     tickLine={{ stroke: "rgba(255,255,255,0.18)" }}
                   />
