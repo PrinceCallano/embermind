@@ -577,25 +577,7 @@ Latest reading:
 - Current: ${latest.current} A`;
   }
 
-  return `Latest telemetry from ${source}:
-- Status: ${latest.status}
-- Class: ${latest.class}
-- IR1: ${latest.ir1} °C
-- IR2: ${latest.ir2} °C
-- Max temperature: ${latest.max_temp} °C
-- Current: ${latest.current} A
-- Relay interpreted state: ${latest.relay_interpreted}
-- Timestamp: ${latest.timestamp}
-
-Analyzed records:
-- Total: ${summary.total_records_analyzed}
-- Normal: ${summary.class_counts.normal}
-- Predictive: ${summary.class_counts.predictive}
-- Preventive: ${summary.class_counts.preventive}
-- Reactive: ${summary.class_counts.reactive}
-
-Note: Reactive/Class 3 is treated as the true trip condition, not raw relay = 0 alone.`;
-}
+return `Based on the analyzed ${source} telemetry, the direct answer is: the latest recorded system state is ${latest.status} / Class ${latest.class}.`;
 
 // ===============================
 // ROUTES
