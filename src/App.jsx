@@ -1203,13 +1203,13 @@ export default function EMBERMINDLiveDashboard() {
           <div className="mt-6 grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
             <StatCard
               icon={Thermometer}
-              label="Terminal Temperature Sensor"
+              label="Terminal Temperature"
               value={hasData ? `${latest.ir1}°C` : "--"}
               subvalue={hasData ? "MLX90614 Sensor 1" : "Waiting for ESP32"}
             />
             <StatCard
               icon={Thermometer}
-              label="Body Temperature Sensor"
+              label="Body Temperature"
               value={hasData ? `${latest.ir2}°C` : "--"}
               subvalue={hasData ? "MLX90614 Sensor 2" : "Waiting for ESP32"}
             />
