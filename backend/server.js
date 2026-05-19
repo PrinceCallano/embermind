@@ -1,4 +1,4 @@
-// v3 - Embermind AI backend with Supabase grounding + free Gemini API fallback + WebSocket realtime broadcast
+// v4 - Embermind AI backend with Supabase grounding + free Gemini API fallback + WebSocket realtime broadcast
 require("dotenv").config();
 
 const express = require("express");
@@ -617,78 +617,109 @@ async function askGemini(prompt) {
 
 function buildLocalFallbackAnswer(message, telemetry, source) {
   if (!telemetry.hasData || !telemetry.summary) {
-    return "I could not find stored telemetry data yet. Please send ESP32 data first, then ask again.";
+    return "I do not have stored telemetry data yet. Please send ESP32 data first, then ask again.";
   }
 
   const lower = String(message || "").toLowerCase();
   const summary = telemetry.summary;
   const latest = summary.latest_reading;
 
-  if (lower.includes("relay") || lower.includes("trip") || lower.includes("shutdown")) {
-    return `Based on the analyzed ${source} telemetry, the relay should be interpreted using the system class, not raw relay value alone.
+  const asksRelay =
+    lower.includes("relay") ||
+    lower.includes("trip") ||
+    lower.includes("shutdown") ||
+    lower.includes("raw value") ||
+    lower.includes("output");
 
-Latest state:
-- Status: ${latest.status}
-- Class: ${latest.class}
-- Relay raw value: ${latest.relay_raw}
-- Relay interpreted state: ${latest.relay_interpreted}
+  const asksHighestTemperature =
+    lower.includes("highest temperature") ||
+    lower.includes("maximum temperature") ||
+    lower.includes("max temperature") ||
+    lower.includes("hottest");
 
-Relay trip records:
-- ${summary.output_counts.relay_trip_records}
+  const asksHighestCurrent =
+    lower.includes("highest current") ||
+    lower.includes("maximum current") ||
+    lower.includes("max current");
 
-Important: Reactive/Class 3 is treated as the true shutdown or trip condition. Raw relay = 0 alone is not counted as a trip because your relay logic may be active-low.`;
-  }
-
-  if (
-    lower.includes("highest") ||
-    lower.includes("maximum") ||
-    lower.includes("hottest") ||
-    lower.includes("max temp")
-  ) {
-    return `Based on the analyzed ${source} telemetry:
-
-Highest temperature:
-- ${summary.highest_temperature.value} °C
-- IR1: ${summary.highest_temperature.ir1} °C
-- IR2: ${summary.highest_temperature.ir2} °C
-- Current at that time: ${summary.highest_temperature.current} A
-- Status: ${summary.highest_temperature.status}
-- Class: ${summary.highest_temperature.class}
-- Timestamp: ${summary.highest_temperature.timestamp}
-
-Highest current:
-- ${summary.highest_current.value} A
-- Max temperature at that time: ${summary.highest_current.max_temp} °C
-- Status: ${summary.highest_current.status}
-- Class: ${summary.highest_current.class}
-- Timestamp: ${summary.highest_current.timestamp}`;
-  }
-
-  if (
+  const asksSummary =
     lower.includes("summary") ||
+    lower.includes("summarize") ||
     lower.includes("history") ||
     lower.includes("database") ||
-    lower.includes("saved")
-  ) {
-    return `Saved telemetry summary from ${source}:
-- Records analyzed: ${summary.total_records_analyzed}
-- Time range: ${summary.time_range.from} to ${summary.time_range.to}
-- Normal records: ${summary.class_counts.normal}
-- Predictive records: ${summary.class_counts.predictive}
-- Preventive records: ${summary.class_counts.preventive}
-- Reactive records: ${summary.class_counts.reactive}
-- Highest temperature: ${summary.highest_temperature.value} °C
-- Highest current: ${summary.highest_current.value} A
-- Relay trip records: ${summary.output_counts.relay_trip_records}
+    lower.includes("saved") ||
+    lower.includes("report");
 
-Latest reading:
-- Status: ${latest.status}
-- Class: ${latest.class}
-- Max temperature: ${latest.max_temp} °C
-- Current: ${latest.current} A`;
+  const asksStatus =
+    lower.includes("status") ||
+    lower.includes("state") ||
+    lower.includes("class") ||
+    lower.includes("condition");
+
+  const asksStable =
+    lower.includes("stable") ||
+    lower.includes("safe") ||
+    lower.includes("risk") ||
+    lower.includes("danger") ||
+    lower.includes("hotspot");
+
+  const asksSensors =
+    lower.includes("sensor") ||
+    lower.includes("ir1") ||
+    lower.includes("ir2") ||
+    lower.includes("temperature") ||
+    lower.includes("current");
+
+  const asksBuzzerLightSms =
+    lower.includes("buzzer") ||
+    lower.includes("light") ||
+    lower.includes("sms") ||
+    lower.includes("alert");
+
+  if (asksRelay) {
+    const didTrip = summary.output_counts.relay_trip_records > 0;
+
+    return didTrip
+      ? `Yes. The analyzed ${source} telemetry contains ${summary.output_counts.relay_trip_records} Reactive/Class 3 record(s), so a relay trip or shutdown condition was recorded.`
+      : `No confirmed relay trip was recorded in the analyzed ${source} telemetry. A true trip is based on Reactive/Class 3 records, and the analyzed data shows ${summary.class_counts.reactive} Reactive records.`;
   }
 
-  return `Based on the analyzed ${source} telemetry, the direct answer is: the latest recorded system state is ${latest.status} / Class ${latest.class}.`;
+  if (asksHighestTemperature) {
+    return `The highest recorded temperature was ${summary.highest_temperature.value} °C at ${summary.highest_temperature.timestamp}.`;
+  }
+
+  if (asksHighestCurrent) {
+    return `The highest recorded current was ${summary.highest_current.value} A at ${summary.highest_current.timestamp}.`;
+  }
+
+  if (asksSummary) {
+    return `The analyzed ${source} telemetry contains ${summary.total_records_analyzed} records from ${summary.time_range.from} to ${summary.time_range.to}. It recorded ${summary.class_counts.normal} Normal, ${summary.class_counts.predictive} Predictive, ${summary.class_counts.preventive} Preventive, and ${summary.class_counts.reactive} Reactive records.`;
+  }
+
+  if (asksStatus) {
+    return `The latest recorded system state is ${latest.status} / Class ${latest.class}.`;
+  }
+
+  if (asksStable) {
+    const stable =
+      summary.class_counts.reactive === 0 &&
+      summary.class_counts.preventive === 0 &&
+      summary.class_counts.predictive === 0;
+
+    return stable
+      ? `Yes. Based on the analyzed ${source} telemetry, the system appears stable because all analyzed records stayed in Normal/Class 0.`
+      : `Not completely. The analyzed ${source} telemetry includes warning-level records: ${summary.class_counts.predictive} Predictive, ${summary.class_counts.preventive} Preventive, and ${summary.class_counts.reactive} Reactive.`;
+  }
+
+  if (asksSensors) {
+    return `Latest sensor values: IR1 is ${latest.ir1} °C, IR2 is ${latest.ir2} °C, max temperature is ${latest.max_temp} °C, and current is ${latest.current} A.`;
+  }
+
+  if (asksBuzzerLightSms) {
+    return `In the analyzed ${source} telemetry, the warning light was active in ${summary.output_counts.light_active_records} record(s), the buzzer was active in ${summary.output_counts.buzzer_active_records} record(s), and the latest SMS state is ${latest.sms_sent ? "sent" : "not sent"}.`;
+  }
+
+  return `I could not generate a specific fallback answer for that question. Try asking about status, temperature, current, relay, stability, saved history, hotspot risk, buzzer, light, SMS, or system events.`;
 }
 
 // ===============================
