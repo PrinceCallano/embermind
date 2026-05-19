@@ -1,4 +1,4 @@
-// v4 - Embermind AI backend with Supabase grounding + free Gemini API fallback + WebSocket realtime broadcast
+// v5 - Embermind AI backend with Supabase grounding + free Gemini API fallback + WebSocket realtime broadcast
 require("dotenv").config();
 
 const express = require("express");
@@ -55,7 +55,6 @@ let telemetryHistory = [];
 
 function sendWebSocketMessage(ws, payload) {
   if (ws.readyState !== WebSocket.OPEN) return;
-
   ws.send(JSON.stringify(payload));
 }
 
@@ -181,7 +180,10 @@ function getStatusFromClass(classValue) {
 }
 
 function isReactiveClass(row) {
-  return safeNumber(row?.class, 0) === 3 || String(row?.status || "").toLowerCase() === "reactive";
+  return (
+    safeNumber(row?.class, 0) === 3 ||
+    String(row?.status || "").toLowerCase() === "reactive"
+  );
 }
 
 function normalizeTelemetry(data) {
@@ -511,6 +513,11 @@ System action rules:
 - Preventive/Class 2 = warning light and/or buzzer may be active.
 - Reactive/Class 3 = dangerous condition requiring shutdown or relay action.
 
+Threshold guide:
+- Predictive begins at approximately 60 °C or 21 A.
+- Preventive begins at approximately 75 °C or 26 A.
+- Reactive begins at approximately 90 °C or 31 A.
+
 Critical relay rule:
 - Treat Reactive/Class 3 as the true shutdown/trip condition.
 - Do NOT treat raw relay = 0 alone as a relay trip.
@@ -624,12 +631,41 @@ function buildLocalFallbackAnswer(message, telemetry, source) {
   const summary = telemetry.summary;
   const latest = summary.latest_reading;
 
+  const latestMaxTemp = safeNumber(latest.max_temp, 0);
+  const latestCurrent = safeNumber(latest.current, 0);
+  const latestClass = safeNumber(latest.class, 0);
+
+  const predictiveTempGap = 60 - latestMaxTemp;
+  const preventiveTempGap = 75 - latestMaxTemp;
+  const reactiveTempGap = 90 - latestMaxTemp;
+
+  const predictiveCurrentGap = 21 - latestCurrent;
+  const preventiveCurrentGap = 26 - latestCurrent;
+  const reactiveCurrentGap = 31 - latestCurrent;
+
+  const asksActionDecision =
+    lower.includes("monitoring") ||
+    lower.includes("warning") ||
+    lower.includes("shutdown action") ||
+    lower.includes("what action") ||
+    lower.includes("action required") ||
+    lower.includes("required action") ||
+    lower.includes("needed action") ||
+    lower.includes("evaluate whether") ||
+    lower.includes("monitoring, warning") ||
+    lower.includes("warning, or shutdown");
+
+  const asksThresholdCloseness =
+    lower.includes("closer to") ||
+    lower.includes("threshold") ||
+    lower.includes("near predictive") ||
+    lower.includes("near preventive") ||
+    lower.includes("near reactive");
+
   const asksRelay =
     lower.includes("relay") ||
     lower.includes("trip") ||
-    lower.includes("shutdown") ||
-    lower.includes("raw value") ||
-    lower.includes("output");
+    lower.includes("raw value");
 
   const asksHighestTemperature =
     lower.includes("highest temperature") ||
@@ -667,14 +703,63 @@ function buildLocalFallbackAnswer(message, telemetry, source) {
     lower.includes("sensor") ||
     lower.includes("ir1") ||
     lower.includes("ir2") ||
-    lower.includes("temperature") ||
-    lower.includes("current");
+    lower.includes("latest max temperature") ||
+    lower.includes("latest temperature") ||
+    lower.includes("latest current") ||
+    lower.includes("sensor values");
 
   const asksBuzzerLightSms =
     lower.includes("buzzer") ||
     lower.includes("light") ||
     lower.includes("sms") ||
     lower.includes("alert");
+
+  if (asksActionDecision) {
+    if (latestClass === 3) {
+      return "The latest condition required shutdown action because it was classified as Reactive/Class 3.";
+    }
+
+    if (latestClass === 2) {
+      return "The latest condition required warning action because it was classified as Preventive/Class 2.";
+    }
+
+    if (latestClass === 1) {
+      return "The latest condition required early monitoring or predictive notification because it was classified as Predictive/Class 1.";
+    }
+
+    return `The latest condition required monitoring only. It was classified as Normal/Class 0, with max temperature ${latestMaxTemp} °C and current ${latestCurrent} A.`;
+  }
+
+  if (asksThresholdCloseness) {
+    if (latestClass === 3) {
+      return "The system was already at the Reactive/Class 3 level, so it was at the shutdown threshold range.";
+    }
+
+    if (latestClass === 2) {
+      return "The system was closest to the Preventive level because it was classified as Class 2.";
+    }
+
+    if (latestClass === 1) {
+      return "The system was closest to the Predictive level because it was classified as Class 1.";
+    }
+
+    const tempGaps = [
+      { level: "Predictive", value: Math.abs(predictiveTempGap), signedGap: predictiveTempGap },
+      { level: "Preventive", value: Math.abs(preventiveTempGap), signedGap: preventiveTempGap },
+      { level: "Reactive", value: Math.abs(reactiveTempGap), signedGap: reactiveTempGap },
+    ];
+
+    const currentGaps = [
+      { level: "Predictive", value: Math.abs(predictiveCurrentGap), signedGap: predictiveCurrentGap },
+      { level: "Preventive", value: Math.abs(preventiveCurrentGap), signedGap: preventiveCurrentGap },
+      { level: "Reactive", value: Math.abs(reactiveCurrentGap), signedGap: reactiveCurrentGap },
+    ];
+
+    const nearestTemp = tempGaps.sort((a, b) => a.value - b.value)[0];
+    const nearestCurrent = currentGaps.sort((a, b) => a.value - b.value)[0];
+
+    return `The system was still in Normal/Class 0. By temperature, it was closest to the ${nearestTemp.level} threshold, with max temperature ${latestMaxTemp} °C. By current, it was closest to the ${nearestCurrent.level} threshold, with current ${latestCurrent} A. Both values were below their warning thresholds.`;
+  }
 
   if (asksRelay) {
     const didTrip = summary.output_counts.relay_trip_records > 0;
@@ -719,7 +804,7 @@ function buildLocalFallbackAnswer(message, telemetry, source) {
     return `In the analyzed ${source} telemetry, the warning light was active in ${summary.output_counts.light_active_records} record(s), the buzzer was active in ${summary.output_counts.buzzer_active_records} record(s), and the latest SMS state is ${latest.sms_sent ? "sent" : "not sent"}.`;
   }
 
-  return `I could not generate a specific fallback answer for that question. Try asking about status, temperature, current, relay, stability, saved history, hotspot risk, buzzer, light, SMS, or system events.`;
+  return "I could not generate a specific fallback answer for that question. The free AI model may be unavailable, so try asking about status, temperature, current, relay, stability, saved history, hotspot risk, buzzer, light, SMS, or system events.";
 }
 
 // ===============================
@@ -1032,7 +1117,7 @@ app.post("/api/reset", (req, res) => {
 
 server.listen(PORT, () => {
   console.log(`NeuroBreak EMBERMIND API running on port ${PORT}`);
-  console.log(`WebSocket realtime endpoint enabled at /ws`);
+  console.log("WebSocket realtime endpoint enabled at /ws");
 
   if (supabase) {
     console.log("Supabase storage: ENABLED");
