@@ -1,4 +1,6 @@
-// v5 - Embermind AI backend with Supabase grounding + free Gemini API fallback + WebSocket realtime broadcast
+// Embermind backend API
+// Express + Supabase + WebSocket realtime broadcast + 5-minute Render keep-alive
+
 require("dotenv").config();
 
 const express = require("express");
@@ -31,6 +33,9 @@ const wss = new WebSocket.Server({
 const supabaseUrl = process.env.SUPABASE_URL;
 const supabaseSecretKey = process.env.SUPABASE_SECRET_KEY;
 
+// Keep this default table name because your existing backend was already using it.
+const TELEMETRY_TABLE = process.env.TELEMETRY_TABLE || "neurobreak_telemetry";
+
 const supabase =
   supabaseUrl && supabaseSecretKey
     ? createClient(supabaseUrl, supabaseSecretKey)
@@ -48,6 +53,80 @@ if (!supabase) {
 let hasReceivedTelemetry = false;
 let latestTelemetry = null;
 let telemetryHistory = [];
+
+// ===============================
+// BASIC HELPERS
+// ===============================
+
+function safeNumber(value, fallback = 0) {
+  const num = Number(value);
+  return Number.isFinite(num) ? num : fallback;
+}
+
+function safeBoolean(value, fallback = false) {
+  if (value === true || value === "true" || value === 1 || value === "1") return true;
+  if (value === false || value === "false" || value === 0 || value === "0") return false;
+  return fallback;
+}
+
+function getStatusFromClass(classValue) {
+  const numericClass = safeNumber(classValue, 0);
+
+  if (numericClass === 0) return "Normal";
+  if (numericClass === 1) return "Predictive";
+  if (numericClass === 2) return "Preventive";
+  if (numericClass === 3) return "Reactive";
+
+  return "Unknown";
+}
+
+function isReactiveClass(row) {
+  return (
+    safeNumber(row?.class, 0) === 3 ||
+    String(row?.status || "").toLowerCase() === "reactive"
+  );
+}
+
+function normalizeTelemetry(data = {}) {
+  const ir1 = safeNumber(data.ir1 ?? data.IR1, 0);
+  const ir2 = safeNumber(data.ir2 ?? data.IR2, 0);
+  const current = safeNumber(data.current ?? data.Current_A, 0);
+  const maxTemp = safeNumber(data.max_temp ?? data.maxTemp, Math.max(ir1, ir2));
+  const classValue = safeNumber(data.class ?? data.state, 0);
+
+  let status = data.status;
+
+  if (!status) {
+    status = getStatusFromClass(classValue);
+  }
+
+  return {
+    has_data: true,
+    device_id: data.device_id ?? data.deviceId ?? "embermind_esp32_001",
+    ir1,
+    ir2,
+    max_temp: maxTemp,
+    current,
+    status,
+    class: classValue,
+    light: safeNumber(data.light, 0),
+    buzzer: safeNumber(data.buzzer, 0),
+    relay: safeNumber(data.relay, 1),
+    sms_sent: safeBoolean(data.sms_sent ?? data.smsSent, false),
+    wifi_status: data.wifi_status ?? data.wifiStatus ?? "connected",
+    cloud_status: "online",
+    timestamp: new Date().toISOString(),
+  };
+}
+
+function getActionFromClass(classValue) {
+  const numericClass = safeNumber(classValue, 0);
+
+  if (numericClass === 3) return "Relay shutdown + SMS alert";
+  if (numericClass === 2) return "Warning light + buzzer";
+  if (numericClass === 1) return "Predictive notification";
+  return "Monitor";
+}
 
 // ===============================
 // WEBSOCKET HELPERS
@@ -100,7 +179,7 @@ wss.on("connection", (ws, req) => {
 
   sendWebSocketMessage(ws, {
     type: "connection",
-    message: "Connected to NeuroBreak realtime WebSocket",
+    message: "Connected to Embermind realtime WebSocket",
     has_data: hasReceivedTelemetry,
     latest: latestTelemetry,
     timestamp: new Date().toISOString(),
@@ -138,6 +217,8 @@ wss.on("connection", (ws, req) => {
   });
 });
 
+// Server-side WebSocket heartbeat.
+// This keeps dead WebSocket connections from staying open forever.
 const heartbeatInterval = setInterval(() => {
   wss.clients.forEach((ws) => {
     if (ws.isAlive === false) {
@@ -154,69 +235,53 @@ wss.on("close", () => {
 });
 
 // ===============================
-// HELPER FUNCTIONS
+// RENDER KEEP-ALIVE PING
 // ===============================
+// This pings /api/health every 5 minutes while the Render service is awake.
+// Important: if Render has already slept, this internal timer cannot wake itself.
+// For defense/demo reliability, also use an external cron ping service.
 
-function safeNumber(value, fallback = 0) {
-  const num = Number(value);
-  return Number.isFinite(num) ? num : fallback;
-}
+const KEEP_ALIVE_INTERVAL_MS = 5 * 60 * 1000;
 
-function safeBoolean(value, fallback = false) {
-  if (value === true || value === "true" || value === 1 || value === "1") return true;
-  if (value === false || value === "false" || value === 0 || value === "0") return false;
-  return fallback;
-}
+const keepAliveUrl =
+  process.env.KEEP_ALIVE_URL ||
+  (process.env.RENDER_EXTERNAL_URL
+    ? `${process.env.RENDER_EXTERNAL_URL.replace(/\/$/, "")}/api/health`
+    : null);
 
-function getStatusFromClass(classValue) {
-  const numericClass = safeNumber(classValue, 0);
-
-  if (numericClass === 0) return "Normal";
-  if (numericClass === 1) return "Predictive";
-  if (numericClass === 2) return "Preventive";
-  if (numericClass === 3) return "Reactive";
-
-  return "Unknown";
-}
-
-function isReactiveClass(row) {
-  return (
-    safeNumber(row?.class, 0) === 3 ||
-    String(row?.status || "").toLowerCase() === "reactive"
-  );
-}
-
-function normalizeTelemetry(data) {
-  const ir1 = safeNumber(data.ir1, 0);
-  const ir2 = safeNumber(data.ir2, 0);
-  const current = safeNumber(data.current, 0);
-  const maxTemp = safeNumber(data.max_temp, Math.max(ir1, ir2));
-  const classValue = safeNumber(data.class, 0);
-
-  let status = data.status;
-
-  if (!status) {
-    status = getStatusFromClass(classValue);
+async function runKeepAlivePing() {
+  if (!keepAliveUrl) {
+    console.log(
+      "Keep-alive ping disabled. Set KEEP_ALIVE_URL or RENDER_EXTERNAL_URL to enable it."
+    );
+    return;
   }
 
-  return {
-    has_data: true,
-    device_id: data.device_id ?? "neurobreak_esp32_001",
-    ir1,
-    ir2,
-    max_temp: maxTemp,
-    current,
-    status,
-    class: classValue,
-    light: safeNumber(data.light, 0),
-    buzzer: safeNumber(data.buzzer, 0),
-    relay: safeNumber(data.relay, 1),
-    sms_sent: safeBoolean(data.sms_sent, false),
-    wifi_status: data.wifi_status ?? "connected",
-    cloud_status: "online",
-    timestamp: new Date().toISOString(),
-  };
+  try {
+    const response = await fetch(keepAliveUrl, {
+      method: "GET",
+      cache: "no-store",
+      headers: {
+        "User-Agent": "Embermind-KeepAlive/1.0",
+      },
+    });
+
+    console.log(
+      `Keep-alive ping: HTTP ${response.status} at ${new Date().toISOString()}`
+    );
+  } catch (error) {
+    console.error("Keep-alive ping failed:", error.message);
+  }
 }
+
+const keepAliveInterval = setInterval(runKeepAlivePing, KEEP_ALIVE_INTERVAL_MS);
+
+// Run once shortly after startup so you can see in Render logs if it works.
+setTimeout(runKeepAlivePing, 10000);
+
+// ===============================
+// SUPABASE HELPERS
+// ===============================
 
 async function saveTelemetryToSupabase(telemetry, rawPayload) {
   if (!supabase) {
@@ -226,7 +291,7 @@ async function saveTelemetryToSupabase(telemetry, rawPayload) {
     };
   }
 
-  const { error } = await supabase.from("neurobreak_telemetry").insert([
+  const { error } = await supabase.from(TELEMETRY_TABLE).insert([
     {
       device_id: telemetry.device_id,
       ir1: telemetry.ir1,
@@ -265,7 +330,7 @@ async function fetchTelemetryRows(limit = 300) {
 
   if (supabase) {
     const result = await supabase
-      .from("neurobreak_telemetry")
+      .from(TELEMETRY_TABLE)
       .select("*")
       .order("created_at", { ascending: false })
       .limit(safeLimit);
@@ -293,6 +358,10 @@ async function fetchTelemetryRows(limit = 300) {
     error: null,
   };
 }
+
+// ===============================
+// TELEMETRY SUMMARY / AI HELPERS
+// ===============================
 
 function buildTelemetrySummary(data, source = "unknown") {
   if (!Array.isArray(data) || data.length === 0) {
@@ -325,7 +394,6 @@ function buildTelemetrySummary(data, source = "unknown") {
   const preventiveRecords = data.filter((row) => safeNumber(row.class, 0) === 2);
   const reactiveRecords = data.filter((row) => safeNumber(row.class, 0) === 3);
 
-  const relayTripRecords = reactiveRecords;
   const buzzerActiveRecords = data.filter((row) => safeNumber(row.buzzer, 0) === 1);
   const lightActiveRecords = data.filter((row) => safeNumber(row.light, 0) === 1);
 
@@ -341,7 +409,9 @@ function buildTelemetrySummary(data, source = "unknown") {
     }
   }
 
-  const latestIrDifference = Math.abs(safeNumber(latest.ir1, 0) - safeNumber(latest.ir2, 0));
+  const latestIrDifference = Math.abs(
+    safeNumber(latest.ir1, 0) - safeNumber(latest.ir2, 0)
+  );
 
   const latestClass = safeNumber(latest.class, 0);
   const latestStatus = latest.status || getStatusFromClass(latestClass);
@@ -363,6 +433,7 @@ function buildTelemetrySummary(data, source = "unknown") {
       current: safeNumber(latest.current, 0),
       status: latestStatus,
       class: latestClass,
+      action: getActionFromClass(latestClass),
       light: safeNumber(latest.light, 0),
       buzzer: safeNumber(latest.buzzer, 0),
       relay_raw: safeNumber(latest.relay, 1),
@@ -404,7 +475,7 @@ function buildTelemetrySummary(data, source = "unknown") {
     },
 
     output_counts: {
-      relay_trip_records: relayTripRecords.length,
+      relay_trip_records: reactiveRecords.length,
       buzzer_active_records: buzzerActiveRecords.length,
       light_active_records: lightActiveRecords.length,
     },
@@ -436,6 +507,7 @@ Latest reading:
 - Current: ${summary.latest_reading.current} A
 - Status: ${summary.latest_reading.status}
 - Class: ${summary.latest_reading.class}
+- Action: ${summary.latest_reading.action}
 - Light: ${summary.latest_reading.light}
 - Buzzer: ${summary.latest_reading.buzzer}
 - Relay raw value: ${summary.latest_reading.relay_raw}
@@ -493,30 +565,14 @@ Diagnostics:
 
 function buildSystemPrompt() {
   return `
-You are Embermind AI, an intelligent engineering assistant for the NeuroBreak residential circuit breaker thermal hotspot prevention dashboard.
+You are Embermind AI, an intelligent engineering assistant for a residential circuit breaker thermal hotspot prevention dashboard.
 
 Your main behavior:
 - Understand the user's question as a whole.
-- Reason from the telemetry data and system rules.
-- Answer like a natural assistant, not like a fixed report.
+- Reason from telemetry data and Embermind system rules.
 - Start with the direct answer.
-- Explain only what is necessary.
-- Do not dump telemetry values unless the user asks for them.
-- Do not use bullet points unless the user asks for a summary, list, comparison, report, or detailed analysis.
-- Do not repeat the same sentence.
-- Do not sound like a template.
 - Do not invent data.
-
-Important:
-You must infer intent from the full question, not from isolated keywords.
-
-Examples of intent:
-- "Evaluate whether the latest condition required monitoring, warning, or shutdown action" means decide the required protection action.
-- "Was the system closer to Predictive, Preventive, or Reactive threshold?" means compare the latest temperature and current against thresholds.
-- "Did the relay trip?" means check whether Reactive/Class 3 occurred.
-- "What was the highest temperature?" means answer only the highest recorded temperature.
-- "Was the system stable?" means judge stability from the latest state and class counts.
-- "Compare IR1 and IR2" means discuss sensor relationship or disagreement.
+- Do not dump all telemetry values unless the user asks for them.
 
 System classes:
 - Class 0 = Normal
@@ -542,12 +598,6 @@ Relay rule:
 
 Safety rule:
 If the user asks what to physically do with breakers, wiring, conductors, or live electrical faults, tell them not to touch live electrical parts and recommend qualified inspection.
-
-Answer style:
-- For simple questions, answer in one or two natural sentences.
-- For technical questions, answer like an engineering assistant.
-- For thesis questions, answer in professional engineering language.
-- Use actual telemetry values only when they help answer the question.
 `;
 }
 
@@ -640,137 +690,11 @@ function buildLocalFallbackAnswer(message, telemetry, source) {
   const summary = telemetry.summary;
   const latest = summary.latest_reading;
 
-  const latestMaxTemp = safeNumber(latest.max_temp, 0);
-  const latestCurrent = safeNumber(latest.current, 0);
-  const latestClass = safeNumber(latest.class, 0);
-
-  const predictiveTempGap = 60 - latestMaxTemp;
-  const preventiveTempGap = 75 - latestMaxTemp;
-  const reactiveTempGap = 90 - latestMaxTemp;
-
-  const predictiveCurrentGap = 21 - latestCurrent;
-  const preventiveCurrentGap = 26 - latestCurrent;
-  const reactiveCurrentGap = 31 - latestCurrent;
-
-  const asksActionDecision =
-    lower.includes("monitoring") ||
-    lower.includes("warning") ||
-    lower.includes("shutdown action") ||
-    lower.includes("what action") ||
-    lower.includes("action required") ||
-    lower.includes("required action") ||
-    lower.includes("needed action") ||
-    lower.includes("evaluate whether") ||
-    lower.includes("monitoring, warning") ||
-    lower.includes("warning, or shutdown");
-
-  const asksThresholdCloseness =
-    lower.includes("closer to") ||
-    lower.includes("threshold") ||
-    lower.includes("near predictive") ||
-    lower.includes("near preventive") ||
-    lower.includes("near reactive");
-
-  const asksRelay =
+  if (
     lower.includes("relay") ||
     lower.includes("trip") ||
-    lower.includes("raw value");
-
-  const asksHighestTemperature =
-    lower.includes("highest temperature") ||
-    lower.includes("maximum temperature") ||
-    lower.includes("max temperature") ||
-    lower.includes("hottest");
-
-  const asksHighestCurrent =
-    lower.includes("highest current") ||
-    lower.includes("maximum current") ||
-    lower.includes("max current");
-
-  const asksSummary =
-    lower.includes("summary") ||
-    lower.includes("summarize") ||
-    lower.includes("history") ||
-    lower.includes("database") ||
-    lower.includes("saved") ||
-    lower.includes("report");
-
-  const asksStatus =
-    lower.includes("status") ||
-    lower.includes("state") ||
-    lower.includes("class") ||
-    lower.includes("condition");
-
-  const asksStable =
-    lower.includes("stable") ||
-    lower.includes("safe") ||
-    lower.includes("risk") ||
-    lower.includes("danger") ||
-    lower.includes("hotspot");
-
-  const asksSensors =
-    lower.includes("sensor") ||
-    lower.includes("ir1") ||
-    lower.includes("ir2") ||
-    lower.includes("latest max temperature") ||
-    lower.includes("latest temperature") ||
-    lower.includes("latest current") ||
-    lower.includes("sensor values");
-
-  const asksBuzzerLightSms =
-    lower.includes("buzzer") ||
-    lower.includes("light") ||
-    lower.includes("sms") ||
-    lower.includes("alert");
-
-  if (asksActionDecision) {
-    if (latestClass === 3) {
-      return "The latest condition required shutdown action because it was classified as Reactive/Class 3.";
-    }
-
-    if (latestClass === 2) {
-      return "The latest condition required warning action because it was classified as Preventive/Class 2.";
-    }
-
-    if (latestClass === 1) {
-      return "The latest condition required early monitoring or predictive notification because it was classified as Predictive/Class 1.";
-    }
-
-    return `The latest condition required monitoring only. It was classified as Normal/Class 0, with max temperature ${latestMaxTemp} °C and current ${latestCurrent} A.`;
-  }
-
-  if (asksThresholdCloseness) {
-    if (latestClass === 3) {
-      return "The system was already at the Reactive/Class 3 level, so it was at the shutdown threshold range.";
-    }
-
-    if (latestClass === 2) {
-      return "The system was closest to the Preventive level because it was classified as Class 2.";
-    }
-
-    if (latestClass === 1) {
-      return "The system was closest to the Predictive level because it was classified as Class 1.";
-    }
-
-    const tempGaps = [
-      { level: "Predictive", value: Math.abs(predictiveTempGap), signedGap: predictiveTempGap },
-      { level: "Preventive", value: Math.abs(preventiveTempGap), signedGap: preventiveTempGap },
-      { level: "Reactive", value: Math.abs(reactiveTempGap), signedGap: reactiveTempGap },
-    ];
-
-    const currentGaps = [
-      { level: "Predictive", value: Math.abs(predictiveCurrentGap), signedGap: predictiveCurrentGap },
-      { level: "Preventive", value: Math.abs(preventiveCurrentGap), signedGap: preventiveCurrentGap },
-      { level: "Reactive", value: Math.abs(reactiveCurrentGap), signedGap: reactiveCurrentGap },
-    ];
-
-    const nearestTemp = tempGaps.sort((a, b) => a.value - b.value)[0];
-    const nearestCurrent = currentGaps.sort((a, b) => a.value - b.value)[0];
-
-    return `The system was still in Normal/Class 0. By temperature, it was closest to the ${nearestTemp.level} threshold, with max temperature ${latestMaxTemp} °C. By current, it was closest to the ${nearestCurrent.level} threshold, with current ${latestCurrent} A. Both values were below their warning thresholds.`;
-  }
-
-  if (asksRelay) {
+    lower.includes("shutdown")
+  ) {
     const didTrip = summary.output_counts.relay_trip_records > 0;
 
     return didTrip
@@ -778,23 +702,40 @@ function buildLocalFallbackAnswer(message, telemetry, source) {
       : `No confirmed relay trip was recorded in the analyzed ${source} telemetry. A true trip is based on Reactive/Class 3 records, and the analyzed data shows ${summary.class_counts.reactive} Reactive records.`;
   }
 
-  if (asksHighestTemperature) {
+  if (
+    lower.includes("highest temperature") ||
+    lower.includes("maximum temperature") ||
+    lower.includes("max temperature") ||
+    lower.includes("hottest")
+  ) {
     return `The highest recorded temperature was ${summary.highest_temperature.value} °C at ${summary.highest_temperature.timestamp}.`;
   }
 
-  if (asksHighestCurrent) {
+  if (
+    lower.includes("highest current") ||
+    lower.includes("maximum current") ||
+    lower.includes("max current")
+  ) {
     return `The highest recorded current was ${summary.highest_current.value} A at ${summary.highest_current.timestamp}.`;
   }
 
-  if (asksSummary) {
-    return `The analyzed ${source} telemetry contains ${summary.total_records_analyzed} records from ${summary.time_range.from} to ${summary.time_range.to}. It recorded ${summary.class_counts.normal} Normal, ${summary.class_counts.predictive} Predictive, ${summary.class_counts.preventive} Preventive, and ${summary.class_counts.reactive} Reactive records.`;
+  if (
+    lower.includes("sensor") ||
+    lower.includes("ir1") ||
+    lower.includes("ir2") ||
+    lower.includes("temperature") ||
+    lower.includes("current")
+  ) {
+    return `Latest sensor values: IR1 is ${latest.ir1} °C, IR2 is ${latest.ir2} °C, max temperature is ${latest.max_temp} °C, and current is ${latest.current} A.`;
   }
 
-  if (asksStatus) {
-    return `The latest recorded system state is ${latest.status} / Class ${latest.class}.`;
-  }
-
-  if (asksStable) {
+  if (
+    lower.includes("stable") ||
+    lower.includes("safe") ||
+    lower.includes("risk") ||
+    lower.includes("danger") ||
+    lower.includes("hotspot")
+  ) {
     const stable =
       summary.class_counts.reactive === 0 &&
       summary.class_counts.preventive === 0 &&
@@ -805,15 +746,27 @@ function buildLocalFallbackAnswer(message, telemetry, source) {
       : `Not completely. The analyzed ${source} telemetry includes warning-level records: ${summary.class_counts.predictive} Predictive, ${summary.class_counts.preventive} Preventive, and ${summary.class_counts.reactive} Reactive.`;
   }
 
-  if (asksSensors) {
-    return `Latest sensor values: IR1 is ${latest.ir1} °C, IR2 is ${latest.ir2} °C, max temperature is ${latest.max_temp} °C, and current is ${latest.current} A.`;
+  if (
+    lower.includes("status") ||
+    lower.includes("state") ||
+    lower.includes("class") ||
+    lower.includes("condition")
+  ) {
+    return `The latest recorded system state is ${latest.status} / Class ${latest.class}. Required action: ${latest.action}.`;
   }
 
-  if (asksBuzzerLightSms) {
-    return `In the analyzed ${source} telemetry, the warning light was active in ${summary.output_counts.light_active_records} record(s), the buzzer was active in ${summary.output_counts.buzzer_active_records} record(s), and the latest SMS state is ${latest.sms_sent ? "sent" : "not sent"}.`;
+  if (
+    lower.includes("summary") ||
+    lower.includes("summarize") ||
+    lower.includes("history") ||
+    lower.includes("database") ||
+    lower.includes("saved") ||
+    lower.includes("report")
+  ) {
+    return `The analyzed ${source} telemetry contains ${summary.total_records_analyzed} records from ${summary.time_range.from} to ${summary.time_range.to}. It recorded ${summary.class_counts.normal} Normal, ${summary.class_counts.predictive} Predictive, ${summary.class_counts.preventive} Preventive, and ${summary.class_counts.reactive} Reactive records.`;
   }
 
-  return "I could not generate a specific fallback answer for that question. The free AI model may be unavailable, so try asking about status, temperature, current, relay, stability, saved history, hotspot risk, buzzer, light, SMS, or system events.";
+  return `The latest Embermind state is ${latest.status} / Class ${latest.class}. Max temperature is ${latest.max_temp} °C, current is ${latest.current} A, and the required action is: ${latest.action}.`;
 }
 
 // ===============================
@@ -822,13 +775,14 @@ function buildLocalFallbackAnswer(message, telemetry, source) {
 
 app.get("/", (req, res) => {
   res.json({
-    message: "NeuroBreak EMBERMIND API is running",
+    message: "Embermind API is running",
     has_data: hasReceivedTelemetry,
     latest: latestTelemetry,
     supabase_configured: Boolean(supabase),
     gemini_configured: Boolean(process.env.GEMINI_API_KEY),
     websocket_enabled: true,
     websocket_path: "/ws",
+    telemetry_table: TELEMETRY_TABLE,
   });
 });
 
@@ -842,6 +796,7 @@ app.get("/api/health", (req, res) => {
     websocket_enabled: true,
     websocket_path: "/ws",
     websocket_clients: wss.clients.size,
+    telemetry_table: TELEMETRY_TABLE,
     timestamp: new Date().toISOString(),
   });
 });
@@ -857,10 +812,10 @@ app.post("/api/telemetry", async (req, res) => {
     telemetryHistory.unshift(latestTelemetry);
     telemetryHistory = telemetryHistory.slice(0, 200);
 
-    // WebSocket broadcast happens immediately so the dashboard updates fast.
-    // Supabase saving happens after this and should not delay live dashboard display.
+    // Broadcast immediately so the dashboard updates fast.
     broadcastTelemetry(latestTelemetry);
 
+    // Save after broadcast. This avoids delaying the live dashboard.
     const supabaseResult = await saveTelemetryToSupabase(latestTelemetry, data);
 
     console.log("Received telemetry:", latestTelemetry);
@@ -900,23 +855,32 @@ app.get("/api/latest", (req, res) => {
 
 // Local temporary history or Supabase permanent history
 app.get("/api/history", async (req, res) => {
-  const limit = Math.min(safeNumber(req.query.limit, 200), 1000);
-  const result = await fetchTelemetryRows(limit);
+  try {
+    const limit = Math.min(safeNumber(req.query.limit, 200), 1000);
+    const result = await fetchTelemetryRows(limit);
 
-  res.json({
-    has_data: result.data.length > 0,
-    source: result.source,
-    error: result.error,
-    history: result.data,
-  });
+    res.json({
+      has_data: result.data.length > 0,
+      source: result.source,
+      error: result.error,
+      history: result.data,
+    });
+  } catch (error) {
+    console.error("History route error:", error.message);
+
+    res.status(500).json({
+      success: false,
+      message: "Failed to fetch history",
+      error: error.message,
+    });
+  }
 });
 
-// Embermind AI context based on stored Supabase telemetry
+// Embermind AI context based on stored telemetry
 app.get("/api/ai-context", async (req, res) => {
   try {
     const limit = Math.min(safeNumber(req.query.limit, 300), 2000);
     const result = await fetchTelemetryRows(limit);
-
     const telemetry = buildTelemetrySummary(result.data, result.source);
 
     if (!telemetry.hasData) {
@@ -946,7 +910,6 @@ System interpretation rules:
 - Reactive means dangerous condition requiring shutdown or relay action.
 - Reactive/Class 3 is the true shutdown/trip condition.
 - Raw relay value must not be treated as a relay trip by itself.
-- Relay raw value may be affected by active-low wiring or ESP32 GPIO reporting.
 `;
 
     res.json({
@@ -1006,7 +969,7 @@ ${message}
       aiProvider = "gemini-free-api";
     } else {
       console.error("Gemini fallback used:", aiResult.error);
-      answer = buildLocalFallbackAnswer(message, telemetry, result.source, aiResult.error);
+      answer = buildLocalFallbackAnswer(message, telemetry, result.source);
       aiProvider = "local-fallback";
     }
 
@@ -1032,18 +995,62 @@ ${message}
 
 // Action stream based on class/status changes
 app.get("/api/action-stream", async (req, res) => {
-  const limit = Math.min(safeNumber(req.query.limit, 500), 2000);
+  try {
+    const limit = Math.min(safeNumber(req.query.limit, 500), 2000);
 
-  if (!supabase) {
+    if (!supabase) {
+      const actions = [];
+
+      for (let i = telemetryHistory.length - 1; i >= 0; i -= 1) {
+        const item = telemetryHistory[i];
+        const previous = telemetryHistory[i + 1];
+
+        if (!previous || item.class !== previous.class || item.status !== previous.status) {
+          actions.push({
+            timestamp: item.timestamp,
+            status: item.status,
+            class: item.class,
+            max_temp: item.max_temp,
+            current: item.current,
+            light: item.light,
+            buzzer: item.buzzer,
+            relay: item.relay,
+            relay_interpreted: isReactiveClass(item) ? "TRIPPED" : "READY",
+          });
+        }
+      }
+
+      return res.json({
+        source: "local_cache",
+        actions: actions.reverse(),
+      });
+    }
+
+    const { data, error } = await supabase
+      .from(TELEMETRY_TABLE)
+      .select("*")
+      .order("created_at", { ascending: true })
+      .limit(limit);
+
+    if (error) {
+      console.error("Supabase action stream fetch error:", error.message);
+
+      return res.status(500).json({
+        success: false,
+        message: "Failed to fetch action stream",
+        error: error.message,
+      });
+    }
+
     const actions = [];
 
-    for (let i = telemetryHistory.length - 1; i >= 0; i--) {
-      const item = telemetryHistory[i];
-      const previous = telemetryHistory[i + 1];
+    for (let i = 0; i < data.length; i += 1) {
+      const item = data[i];
+      const previous = data[i - 1];
 
       if (!previous || item.class !== previous.class || item.status !== previous.status) {
         actions.push({
-          timestamp: item.timestamp,
+          timestamp: item.created_at,
           status: item.status,
           class: item.class,
           max_temp: item.max_temp,
@@ -1056,53 +1063,19 @@ app.get("/api/action-stream", async (req, res) => {
       }
     }
 
-    return res.json({
-      source: "local_cache",
-      actions: actions.reverse(),
+    res.json({
+      source: "supabase",
+      actions,
     });
-  }
+  } catch (error) {
+    console.error("Action stream route error:", error.message);
 
-  const { data, error } = await supabase
-    .from("neurobreak_telemetry")
-    .select("*")
-    .order("created_at", { ascending: true })
-    .limit(limit);
-
-  if (error) {
-    console.error("Supabase action stream fetch error:", error.message);
-
-    return res.status(500).json({
+    res.status(500).json({
       success: false,
       message: "Failed to fetch action stream",
       error: error.message,
     });
   }
-
-  const actions = [];
-
-  for (let i = 0; i < data.length; i++) {
-    const item = data[i];
-    const previous = data[i - 1];
-
-    if (!previous || item.class !== previous.class || item.status !== previous.status) {
-      actions.push({
-        timestamp: item.created_at,
-        status: item.status,
-        class: item.class,
-        max_temp: item.max_temp,
-        current: item.current,
-        light: item.light,
-        buzzer: item.buzzer,
-        relay: item.relay,
-        relay_interpreted: isReactiveClass(item) ? "TRIPPED" : "READY",
-      });
-    }
-  }
-
-  res.json({
-    source: "supabase",
-    actions,
-  });
 });
 
 // Clears only local memory, not Supabase database
@@ -1121,12 +1094,45 @@ app.post("/api/reset", (req, res) => {
 });
 
 // ===============================
+// GRACEFUL SHUTDOWN
+// ===============================
+
+function shutdownServer(signal) {
+  console.log(`${signal} received. Shutting down Embermind API...`);
+
+  clearInterval(heartbeatInterval);
+  clearInterval(keepAliveInterval);
+
+  wss.clients.forEach((client) => {
+    try {
+      client.close();
+    } catch (error) {
+      console.error("Failed to close WebSocket client:", error.message);
+    }
+  });
+
+  server.close(() => {
+    console.log("HTTP server closed.");
+    process.exit(0);
+  });
+
+  setTimeout(() => {
+    console.error("Forced shutdown after timeout.");
+    process.exit(1);
+  }, 10000);
+}
+
+process.on("SIGTERM", () => shutdownServer("SIGTERM"));
+process.on("SIGINT", () => shutdownServer("SIGINT"));
+
+// ===============================
 // START SERVER
 // ===============================
 
 server.listen(PORT, () => {
-  console.log(`NeuroBreak EMBERMIND API running on port ${PORT}`);
+  console.log(`Embermind API running on port ${PORT}`);
   console.log("WebSocket realtime endpoint enabled at /ws");
+  console.log(`Telemetry table: ${TELEMETRY_TABLE}`);
 
   if (supabase) {
     console.log("Supabase storage: ENABLED");
@@ -1138,5 +1144,11 @@ server.listen(PORT, () => {
     console.log("Gemini AI: ENABLED");
   } else {
     console.log("Gemini AI: DISABLED - local fallback will be used");
+  }
+
+  if (keepAliveUrl) {
+    console.log(`Keep-alive ping: ENABLED -> ${keepAliveUrl}`);
+  } else {
+    console.log("Keep-alive ping: DISABLED");
   }
 });
