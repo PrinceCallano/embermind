@@ -717,6 +717,202 @@ function AssistantPanel({
   );
 }
 
+function useEmbermindWebSocketTelemetry({
+  appendTelemetryPoint,
+  fetchLiveTelemetryBackup,
+  setConnectionError,
+  setHistory,
+  setRealtimeStatus,
+  setTick,
+}) {
+  useEffect(() => {
+    if (USE_DEMO_DATA) {
+      const demoInterval = setInterval(() => {
+        setHistory((prev) => {
+          const next = createDemoPoint(prev[prev.length - 1]);
+          return [...prev.slice(-(MAX_HISTORY_POINTS - 1)), next];
+        });
+        setConnectionError(null);
+        setRealtimeStatus("demo");
+        setTick((value) => value + 1);
+      }, 1000);
+
+      return () => clearInterval(demoInterval);
+    }
+
+    let stopped = false;
+    let socket = null;
+    let reconnectTimer = null;
+    let backupPollingTimer = null;
+    let clientPingTimer = null;
+
+    function clearReconnectTimer() {
+      if (reconnectTimer) {
+        clearTimeout(reconnectTimer);
+        reconnectTimer = null;
+      }
+    }
+
+    function clearBackupPollingTimer() {
+      if (backupPollingTimer) {
+        clearTimeout(backupPollingTimer);
+        backupPollingTimer = null;
+      }
+    }
+
+    function clearClientPingTimer() {
+      if (clientPingTimer) {
+        clearInterval(clientPingTimer);
+        clientPingTimer = null;
+      }
+    }
+
+    function sendClientPing() {
+      if (!socket || socket.readyState !== WebSocket.OPEN) return;
+      socket.send("ping");
+    }
+
+    async function runBackupPollingLoop() {
+      if (stopped) return;
+
+      try {
+        await fetchLiveTelemetryBackup();
+      } catch (error) {
+        if (!stopped) {
+          setConnectionError(
+            error.name === "AbortError"
+              ? "Backup polling timed out"
+              : error.message || "Connection failed"
+          );
+          setTick((value) => value + 1);
+        }
+      } finally {
+        if (!stopped) {
+          backupPollingTimer = setTimeout(runBackupPollingLoop, LIVE_REFRESH_MS);
+        }
+      }
+    }
+
+    function scheduleReconnect() {
+      if (stopped) return;
+
+      clearReconnectTimer();
+      clearClientPingTimer();
+
+      reconnectTimer = setTimeout(() => {
+        if (!stopped) {
+          connectWebSocket();
+        }
+      }, WEBSOCKET_RECONNECT_MS);
+    }
+
+    function connectWebSocket() {
+      if (stopped) return;
+
+      try {
+        setRealtimeStatus((previous) =>
+          previous === "connected" ? "connected" : "connecting"
+        );
+
+        socket = new WebSocket(WEBSOCKET_URL);
+
+        socket.onopen = () => {
+          if (stopped) return;
+
+          setRealtimeStatus("connected");
+          setConnectionError(null);
+          clearReconnectTimer();
+          clearClientPingTimer();
+
+          sendClientPing();
+          clientPingTimer = setInterval(sendClientPing, 25000);
+        };
+
+        socket.onmessage = (event) => {
+          if (stopped) return;
+
+          try {
+            const message = JSON.parse(event.data);
+
+            if (message.type === "pong") {
+              setRealtimeStatus("connected");
+              setConnectionError(null);
+              return;
+            }
+
+            const payload = normalizeWebSocketPayload(message);
+            if (!payload) return;
+
+            const point = normalizeTelemetry(payload);
+            appendTelemetryPoint(point);
+
+            if (message.type === "reset") {
+              setConnectionError(null);
+            }
+
+            setRealtimeStatus("connected");
+            setConnectionError(null);
+            setTick((value) => value + 1);
+          } catch (error) {
+            console.error("WebSocket message parse error:", error);
+          }
+        };
+
+        socket.onerror = () => {
+          if (stopped) return;
+
+          setRealtimeStatus("reconnecting");
+          setConnectionError("Realtime WebSocket warning. Using backup polling.");
+        };
+
+        socket.onclose = () => {
+          if (stopped) return;
+
+          clearClientPingTimer();
+          setRealtimeStatus("reconnecting");
+          setConnectionError("Realtime WebSocket disconnected. Using backup polling.");
+          scheduleReconnect();
+        };
+      } catch (error) {
+        if (stopped) return;
+
+        clearClientPingTimer();
+        setRealtimeStatus("reconnecting");
+        setConnectionError(error.message || "Failed to start realtime WebSocket");
+        scheduleReconnect();
+      }
+    }
+
+    connectWebSocket();
+    runBackupPollingLoop();
+
+    return () => {
+      stopped = true;
+      clearReconnectTimer();
+      clearBackupPollingTimer();
+      clearClientPingTimer();
+
+      if (socket) {
+        socket.onopen = null;
+        socket.onmessage = null;
+        socket.onerror = null;
+        socket.onclose = null;
+
+        if (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING) {
+          socket.close();
+        }
+      }
+    };
+  }, [
+    appendTelemetryPoint,
+    fetchLiveTelemetryBackup,
+    setConnectionError,
+    setHistory,
+    setRealtimeStatus,
+    setTick,
+  ]);
+}
+
 export default function EMBERMINDLiveDashboard() {
   const isMobile = useIsMobile();
 
@@ -808,157 +1004,14 @@ export default function EMBERMINDLiveDashboard() {
     return () => clearInterval(clock);
   }, []);
 
-  useEffect(() => {
-    if (USE_DEMO_DATA) {
-      const demoInterval = setInterval(() => {
-        setHistory((prev) => {
-          const next = createDemoPoint(prev[prev.length - 1]);
-          return [...prev.slice(-(MAX_HISTORY_POINTS - 1)), next];
-        });
-        setConnectionError(null);
-        setRealtimeStatus("demo");
-        setTick((value) => value + 1);
-      }, 1000);
-
-      return () => clearInterval(demoInterval);
-    }
-
-    let stopped = false;
-    let socket = null;
-    let reconnectTimer = null;
-    let backupPollingTimer = null;
-
-    function clearReconnectTimer() {
-      if (reconnectTimer) {
-        clearTimeout(reconnectTimer);
-        reconnectTimer = null;
-      }
-    }
-
-    function clearBackupPollingTimer() {
-      if (backupPollingTimer) {
-        clearTimeout(backupPollingTimer);
-        backupPollingTimer = null;
-      }
-    }
-
-    async function runBackupPollingLoop() {
-      if (stopped) return;
-
-      try {
-        await fetchLiveTelemetryBackup();
-      } catch (error) {
-        if (!stopped) {
-          setConnectionError(error.name === "AbortError" ? "Backup polling timed out" : error.message || "Connection failed");
-          setTick((value) => value + 1);
-        }
-      } finally {
-        if (!stopped) {
-          backupPollingTimer = setTimeout(runBackupPollingLoop, LIVE_REFRESH_MS);
-        }
-      }
-    }
-
-    function scheduleReconnect() {
-      if (stopped) return;
-
-      clearReconnectTimer();
-
-      reconnectTimer = setTimeout(() => {
-        if (!stopped) {
-          connectWebSocket();
-        }
-      }, WEBSOCKET_RECONNECT_MS);
-    }
-
-    function connectWebSocket() {
-      if (stopped) return;
-
-      try {
-        setRealtimeStatus((previous) => (previous === "connected" ? "connected" : "connecting"));
-
-        socket = new WebSocket(WEBSOCKET_URL);
-
-        socket.onopen = () => {
-          if (stopped) return;
-
-          setRealtimeStatus("connected");
-          setConnectionError(null);
-          clearReconnectTimer();
-
-          if (socket?.readyState === WebSocket.OPEN) {
-            socket.send("ping");
-          }
-        };
-
-        socket.onmessage = (event) => {
-          if (stopped) return;
-
-          try {
-            const message = JSON.parse(event.data);
-            const payload = normalizeWebSocketPayload(message);
-
-            if (!payload) return;
-
-            const point = normalizeTelemetry(payload);
-
-            appendTelemetryPoint(point);
-
-            if (message.type === "reset") {
-              setConnectionError(null);
-            }
-
-            setRealtimeStatus("connected");
-            setConnectionError(null);
-            setTick((value) => value + 1);
-          } catch (error) {
-            console.error("WebSocket message parse error:", error);
-          }
-        };
-
-        socket.onerror = () => {
-          if (stopped) return;
-
-          setRealtimeStatus("reconnecting");
-          setConnectionError("Realtime WebSocket warning. Using backup polling.");
-        };
-
-        socket.onclose = () => {
-          if (stopped) return;
-
-          setRealtimeStatus("reconnecting");
-          setConnectionError("Realtime WebSocket disconnected. Using backup polling.");
-          scheduleReconnect();
-        };
-      } catch (error) {
-        if (stopped) return;
-
-        setRealtimeStatus("reconnecting");
-        setConnectionError(error.message || "Failed to start realtime WebSocket");
-        scheduleReconnect();
-      }
-    }
-
-    connectWebSocket();
-    runBackupPollingLoop();
-
-    return () => {
-      stopped = true;
-      clearReconnectTimer();
-      clearBackupPollingTimer();
-
-      if (socket) {
-        socket.onopen = null;
-        socket.onmessage = null;
-        socket.onerror = null;
-        socket.onclose = null;
-
-        if (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING) {
-          socket.close();
-        }
-      }
-    };
-  }, [appendTelemetryPoint, fetchLiveTelemetryBackup]);
+  useEmbermindWebSocketTelemetry({
+    appendTelemetryPoint,
+    fetchLiveTelemetryBackup,
+    setConnectionError,
+    setHistory,
+    setRealtimeStatus,
+    setTick,
+  });
 
   const fetchSavedActionLogs = useCallback(async () => {
     try {
