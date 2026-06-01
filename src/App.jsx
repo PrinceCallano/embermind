@@ -33,7 +33,6 @@ import {
 } from "recharts";
 
 const USE_DEMO_DATA = false;
-const USE_WEBSOCKET = false;
 
 const API_BASE_URL = "https://neurobreak-api.onrender.com";
 const API_URL = `${API_BASE_URL}/api/latest`;
@@ -940,14 +939,8 @@ export default function EMBERMINDLiveDashboard() {
       }
     }
 
-if (USE_WEBSOCKET) {
-  connectWebSocket();
-  runBackupPollingLoop();
-} else {
-  setRealtimeStatus("polling");
-  setConnectionError(null);
-  runBackupPollingLoop();
-}
+    connectWebSocket();
+    runBackupPollingLoop();
 
     return () => {
       stopped = true;
